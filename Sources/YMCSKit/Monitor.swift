@@ -78,9 +78,12 @@ public struct MonitorSnapshot: Sendable, Equatable {
 
 /// Polls YMCS and publishes snapshots.
 ///
-/// The API has no webhooks, so this is the only way to learn about a phone
-/// dropping. The loop is built around the enterprise-wide 50 req/s budget being
-/// shared with whatever else uses the same credentials, so it stays cheap:
+/// YMCS can push events instead (Event Subscription, in the console under
+/// System > Integration > API), but that needs a publicly reachable URL to
+/// deliver to, so polling is the only option available to a desktop app.
+///
+/// The loop is built around the enterprise-wide 50 req/s budget being shared
+/// with whatever else uses the same credentials, so it stays cheap:
 ///
 ///   - every `heartbeat`, one request for the offline device *count*
 ///   - the full device list only when that count moved, when `fullRefresh` has

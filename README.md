@@ -50,7 +50,10 @@ swift test
 
 ## How it polls
 
-The API has no webhooks, so polling is the only option. The enterprise-wide
+YMCS does support pushed events -- there is an Event Subscription panel in the
+console, under System > Integration > API -- but delivery needs a publicly
+reachable URL for YMCS to POST to, which a Mac behind NAT has not got. So this
+app polls. The enterprise-wide
 budget is 50 requests/second, shared with every other integration using the same
 credentials, so the loop stays cheap:
 

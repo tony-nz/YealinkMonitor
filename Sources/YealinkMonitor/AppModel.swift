@@ -31,6 +31,7 @@ final class AppModel {
     private let notifier = Notifier()
 
     private var monitor: Monitor?
+    private var hasStarted = false
     private var snapshotTask: Task<Void, Never>?
     private var changeTask: Task<Void, Never>?
     private var lifecycleObservers: [any NSObjectProtocol] = []
@@ -42,7 +43,17 @@ final class AppModel {
 
     // MARK: - Lifecycle
 
+    /// Idempotent, and it has to be.
+    ///
+    /// This is driven from a `.task` on the menu bar popover's content, and with
+    /// `.menuBarExtraStyle(.window)` that content is rebuilt every single time
+    /// the menu is opened. Without this guard, each click tore down the running
+    /// monitor and started a new one with an empty snapshot -- the device list
+    /// vanished, the app re-authenticated, and the transition detector re-primed
+    /// its baseline so a phone that was already offline would never alert.
     func start() async {
+        guard !hasStarted else { return }
+        hasStarted = true
         await notifier.requestAuthorizationIfNeeded()
         observeSystemEvents()
         rebuildMonitor()
