@@ -1,0 +1,10 @@
+{
+  "skip": 0,
+  "limit": 10,
+  "total": 3,
+  "data": [
+    {"id":"d1","mac":"001565bbb1a9","sn":"1106312113402006","name":"Reception T54S","modelId":"m1","siteId":"s1","programVersion":"70.83.0.68","deviceStatus":"online"},
+    {"id":"d2","mac":"001565bbb1aa","sn":"1106312113402007","name":"Workshop T31P","modelId":"m2","siteId":"s1","programVersion":"124.86.0.20","deviceStatus":"offline"},
+    {"id":"d3","mac":"001565bbb1ab","sn":null,"name":null,"modelId":"m2","siteId":"s2","programVersion":null,"deviceStatus":"pending"}
+  ]
+}

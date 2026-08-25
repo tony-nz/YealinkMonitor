@@ -1,0 +1,10 @@
+{
+  "id":"d1","mac":"001565bbb1a9","sn":"1106312113402006","name":"Reception T54S",
+  "modelId":"m1","modelName":"SIP-T54S","siteId":"s1","siteName":"Head Office",
+  "lanIp":"10.50.198.156","deviceStatus":"online","programVersion":"70.83.0.68",
+  "lastReportTime":1737082468768,
+  "accounts":[
+    {"accountId":"a1","lineId":1,"accountType":0,"accountServer":"pbx.example.com","registerName":"201","username":"201","status":1},
+    {"accountId":"a2","lineId":2,"accountType":0,"accountServer":"pbx.example.com","registerName":"202","username":"202","status":3}
+  ]
+}
