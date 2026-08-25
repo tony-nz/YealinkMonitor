@@ -42,7 +42,29 @@ This renders the icon, compiles with SwiftPM, assembles
 `build/YealinkMonitor.app` by hand and ad-hoc signs it. Then open **Settings** from the menu bar item, enter the Client
 ID and Secret, and press **Save & Test Connection**.
 
-### 3. Tests
+### 3. Deploying to another Mac
+
+Build the bundle, copy it over, then provision that machine once:
+
+```sh
+./Scripts/provision.sh --id '<AccessKey ID>' --region au --app /Applications/YealinkMonitor.app
+```
+
+It prompts for the secret (or reads `YMCS_CLIENT_SECRET`), stores it in the
+login keychain and writes the Client ID and region to the app's preferences.
+`--uninstall` reverses both.
+
+**The secret is deliberately not embedded in the bundle.** The YMCS AccessKey
+authorises device restart, factory reset, firmware push and configuration push
+across the entire enterprise -- this app only reads, but the credential does not
+know that. Since YMCS issues one pair per enterprise, it cannot be scoped down
+or rotated for this app alone, so a bundle with the key baked in would be a
+copyable, unrevokable grant of that capability. A string in a binary comes
+straight back out with `strings`.
+
+For the same reason: never commit the secret. This repository is public.
+
+### 4. Tests
 
 ```sh
 swift test
@@ -89,6 +111,7 @@ Sources/YMCSKit/          API client, polling engine — no UI, fully tested
   Transitions.swift       debounced online/offline change detection
 Sources/YealinkMonitor/   SwiftUI app
 Scripts/smoke-test.sh     Phase 0 API check
+Scripts/provision.sh      seed a Mac's keychain and preferences
 Scripts/make-app.sh       build the .app bundle without Xcode
 Scripts/make-icon.swift   draws AppIcon.icns from paths at every size
 ```
