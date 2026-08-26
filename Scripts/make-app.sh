@@ -21,10 +21,40 @@ VERSION="0.1.0"
 
 cd "$ROOT"
 
+# Release builds are universal so the bundle runs natively on both Apple
+# Silicon and Intel. SwiftPM's own --arch flag needs Xcode's xcbuild, which the
+# Command Line Tools do not ship, so each slice is built separately and lipo'd
+# together. Debug builds stay native-only, because the second slice roughly
+# doubles the build time and is no help while iterating.
+ARM_TRIPLE="arm64-apple-macosx14.0"
+# A separate scratch path: sharing one .build across triples corrupts SwiftPM's
+# build database ("command ... not registered") and breaks the next native build.
+ARM_SCRATCH=".build/arm64"
+STAGED_BINARY=""
+
 echo "==> Building ($CONFIG)"
 swift build -c "$CONFIG"
-BINARY="$(swift build -c "$CONFIG" --show-bin-path)/YealinkMonitor"
-[[ -x "$BINARY" ]] || { echo "error: binary not found at $BINARY" >&2; exit 1; }
+NATIVE_BINARY="$(swift build -c "$CONFIG" --show-bin-path)/YealinkMonitor"
+[[ -x "$NATIVE_BINARY" ]] || { echo "error: binary not found at $NATIVE_BINARY" >&2; exit 1; }
+BINARY="$NATIVE_BINARY"
+
+if [[ "$CONFIG" == "release" && "${SKIP_UNIVERSAL:-0}" != "1" ]]; then
+    echo "==> Building arm64 slice"
+    if swift build -c "$CONFIG" --triple "$ARM_TRIPLE" --scratch-path "$ARM_SCRATCH"; then
+        ARM_BINARY="$(swift build -c "$CONFIG" --triple "$ARM_TRIPLE" --scratch-path "$ARM_SCRATCH" --show-bin-path)/YealinkMonitor"
+        if [[ -x "$ARM_BINARY" && "$ARM_BINARY" != "$NATIVE_BINARY" ]]; then
+            STAGED_BINARY="$ROOT/build/YealinkMonitor.universal"
+            mkdir -p "$ROOT/build"
+            lipo -create "$NATIVE_BINARY" "$ARM_BINARY" -output "$STAGED_BINARY"
+            BINARY="$STAGED_BINARY"
+            echo "==> Universal: $(lipo -archs "$BINARY")"
+        fi
+    else
+        # Not fatal: a native-only bundle still runs here, just not natively on
+        # Apple Silicon. Say so rather than shipping a surprise.
+        echo "warning: arm64 slice failed; bundle will be $(uname -m) only" >&2
+    fi
+fi
 
 echo "==> Rendering icon"
 swift "$ROOT/Scripts/make-icon.swift" >/dev/null
@@ -34,6 +64,7 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/YealinkMonitor"
+[[ -n "$STAGED_BINARY" ]] && rm -f "$STAGED_BINARY"
 cp "$ROOT/build/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST

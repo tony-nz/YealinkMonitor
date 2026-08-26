@@ -44,7 +44,9 @@ ID and Secret, and press **Save & Test Connection**.
 
 ### 3. Deploying to another Mac
 
-Build the bundle, copy it over, then provision that machine once:
+Release builds are universal (x86_64 + arm64), so the bundle runs natively on
+both Intel and Apple Silicon. Build it, copy it over, then provision that
+machine once:
 
 ```sh
 ./Scripts/provision.sh --id '<AccessKey ID>' --region au --app /Applications/YealinkMonitor.app
@@ -53,6 +55,18 @@ Build the bundle, copy it over, then provision that machine once:
 It prompts for the secret (or reads `YMCS_CLIENT_SECRET`), stores it in the
 login keychain and writes the Client ID and region to the app's preferences.
 `--uninstall` reverses both.
+
+Because the app is only ad-hoc signed, Gatekeeper rejects it on a Mac it did not
+come from. Transfers that set the quarantine flag -- AirDrop, email, a download
+-- will be blocked outright, with no right-click bypass on recent macOS. Either
+clear the flag on the target machine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/YealinkMonitor.app
+```
+
+or copy it by a route that never sets it (`scp`, `rsync`, a Finder copy from a
+USB disk). Notarizing with a Developer ID removes this step entirely.
 
 **The secret is deliberately not embedded in the bundle.** The YMCS AccessKey
 authorises device restart, factory reset, firmware push and configuration push
@@ -118,6 +132,7 @@ Scripts/make-icon.swift   draws AppIcon.icns from paths at every size
 
 ## Not done yet
 
-- App Sandbox and notarization (needs a Developer ID; ad-hoc signing only for now)
+- App Sandbox and notarization (needs a Developer ID; ad-hoc signing only for
+  now, which means Gatekeeper blocks quarantined copies on other Macs)
 - Anything that writes to devices — reboot, reconfigure, firmware push are all
   deliberately left out
