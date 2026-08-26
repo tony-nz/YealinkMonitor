@@ -54,9 +54,30 @@ final class AppModel {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+        adoptEmbeddedCredentialsIfNeeded()
         await notifier.requestAuthorizationIfNeeded()
         observeSystemEvents()
         rebuildMonitor()
+    }
+
+    /// Moves credentials baked into the bundle into the keychain and
+    /// preferences, so an embedded build provisions itself on first launch.
+    ///
+    /// Effectively runs once per machine: afterwards the keychain holds the
+    /// secret and this returns early, which means anything the user later
+    /// changes in Settings wins over what the bundle shipped with.
+    private func adoptEmbeddedCredentialsIfNeeded() {
+        guard !settings.isConfigured || !hasStoredSecret else { return }
+        guard let embedded = EmbeddedCredentials.current else { return }
+
+        if !hasStoredSecret {
+            try? Keychain.writeSecret(embedded.clientSecret)
+        }
+        var updated = settings
+        if updated.clientID.isEmpty { updated.clientID = embedded.clientID }
+        if let region = embedded.region { updated.region = region }
+        // Assigned once, so didSet fires a single time rather than per field.
+        settings = updated
     }
 
     /// Rebuilt rather than reconfigured whenever the credentials or region

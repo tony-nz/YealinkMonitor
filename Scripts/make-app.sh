@@ -9,11 +9,34 @@
 #   ./Scripts/make-app.sh              # release build
 #   ./Scripts/make-app.sh debug        # faster build, for iterating
 #   ./Scripts/make-app.sh release run  # build then launch
+#
+# Passing --embed bakes credentials from YMCS_CLIENT_ID / YMCS_CLIENT_SECRET
+# into the bundle, so it can be copied to another Mac and run with no setup:
+#
+#   export YMCS_CLIENT_ID='...'
+#   read -rs YMCS_CLIENT_SECRET && export YMCS_CLIENT_SECRET
+#   ./Scripts/make-app.sh release --embed
+#
+# Understand what that produces. Info.plist is plain text, so anyone holding
+# the bundle can read the key, and the YMCS AccessKey authorises device
+# restart, factory reset and firmware push across the whole enterprise. YMCS
+# issues one pair per enterprise, so it cannot be scoped down or revoked for
+# this app alone. An embedded bundle is a credential -- do not put it on a USB
+# stick, in a shared folder, or anywhere it can be copied onward.
 
 set -euo pipefail
 
-CONFIG="${1:-release}"
-ACTION="${2:-}"
+CONFIG="release"
+ACTION=""
+EMBED=0
+for arg in "$@"; do
+    case "$arg" in
+        debug|release) CONFIG="$arg" ;;
+        run)           ACTION="run" ;;
+        --embed)       EMBED=1 ;;
+        *) echo "error: unknown argument '$arg'" >&2; exit 64 ;;
+    esac
+done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/YealinkMonitor.app"
 BUNDLE_ID="nz.co.myers.YealinkMonitor"
@@ -87,6 +110,30 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+if [[ $EMBED -eq 1 ]]; then
+    if [[ -z "${YMCS_CLIENT_ID:-}" || -z "${YMCS_CLIENT_SECRET:-}" ]]; then
+        echo "error: --embed needs YMCS_CLIENT_ID and YMCS_CLIENT_SECRET in the environment" >&2
+        echo "       export YMCS_CLIENT_ID='...'; read -rs YMCS_CLIENT_SECRET && export YMCS_CLIENT_SECRET" >&2
+        exit 64
+    fi
+    # PlistBuddy rather than string interpolation into the heredoc above, so a
+    # credential containing &, < or > cannot produce a malformed plist.
+    /usr/libexec/PlistBuddy \
+        -c "Add :YMCSClientID string ${YMCS_CLIENT_ID}" \
+        -c "Add :YMCSClientSecret string ${YMCS_CLIENT_SECRET}" \
+        -c "Add :YMCSRegion string ${YMCS_REGION:-au}" \
+        "$APP/Contents/Info.plist" >/dev/null
+    echo "==> Embedded credentials (region ${YMCS_REGION:-au})"
+    cat >&2 <<'WARNING'
+
+    !! This bundle now CONTAINS the YMCS AccessKey in plain text.
+       Anyone who gets a copy can restart, reconfigure or factory-reset
+       every phone in the enterprise. Treat the .app as the secret it is:
+       no USB sticks, no shared folders, no email.
+
+WARNING
+fi
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
