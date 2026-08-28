@@ -12,6 +12,19 @@ struct MenuBarContentView: View {
             header
             Divider()
             content
+            if let emailError = model.email.lastError, model.settings.emailEnabled {
+                Divider()
+                banner(
+                    "Email alerts are failing",
+                    detail: emailError,
+                    symbol: "envelope.badge.shield.half.filled",
+                    tint: .red
+                )
+            }
+            if !model.alarmedDevices.isEmpty {
+                Divider()
+                alarmBanner
+            }
             Divider()
             footer
         }
@@ -58,7 +71,7 @@ struct MenuBarContentView: View {
             )
         } else if model.problems.isEmpty {
             message(
-                "All \(model.snapshot.devices.count) phones online",
+                "All \(model.activeDevices.count) phones online",
                 detail: model.mutedProblems.isEmpty
                     ? nil
                     : "\(model.mutedProblems.count) muted device\(model.mutedProblems.count == 1 ? "" : "s") not shown.",
@@ -77,12 +90,62 @@ struct MenuBarContentView: View {
         }
     }
 
+    /// YMCS's own alarms, which do not line up with this app's online/offline
+    /// view: a phone can be reachable and still have a critical alarm against
+    /// it, and that would otherwise never appear in the popover.
+    private var alarmBanner: some View {
+        let alarmed = model.alarmedDevices
+        let worst = alarmed.first?.alarms.first?.level
+        return banner(
+            "\(alarmed.count) phone\(alarmed.count == 1 ? "" : "s") with active alarms",
+            detail: alarmSummary(alarmed),
+            symbol: worst?.symbolName ?? "exclamationmark.circle",
+            tint: worst?.tint ?? .secondary
+        )
+    }
+
+    /// A one-line notice under the device list. Used for anything the user needs
+    /// to know that is not itself a phone being offline -- an alarm YMCS raised,
+    /// or this app failing to send the email it promised to send.
+    private func banner(_ title: String, detail: String, symbol: String, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    /// The distinct event names, commonest first, so a fleet-wide problem reads
+    /// as one line rather than forty.
+    private func alarmSummary(_ alarmed: [AppModel.AlarmedDevice]) -> String {
+        let events = alarmed.flatMap { $0.alarms.compactMap(\.event) }
+        let counts = Dictionary(events.map { ($0, 1) }, uniquingKeysWith: +)
+        return counts
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            .prefix(3)
+            .map { $0.value > 1 ? "\($0.key) ×\($0.value)" : $0.key }
+            .joined(separator: " · ")
+    }
+
     private var footer: some View {
         HStack(spacing: 12) {
             Button("All Phones…") {
                 openWindow(id: DevicesWindowID)
                 // An accessory-policy app does not get focus for free, so the
                 // window would otherwise open behind whatever is in front.
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Button("Activity…") {
+                openWindow(id: ActivityWindowID)
                 NSApp.activate(ignoringOtherApps: true)
             }
             Button("Settings…") {

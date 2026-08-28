@@ -1,24 +1,63 @@
 import Foundation
 
 public struct StatusChange: Sendable, Hashable, Identifiable, Codable {
+    /// Why the device changed status, as far as this app can tell.
+    ///
+    /// A phone this app rebooted drops and returns exactly like one that failed,
+    /// so without this a deliberate restart would be alerted as an outage --
+    /// including by email, at 3am, for a scheduled run.
+    public enum Cause: String, Sendable, Hashable, Codable {
+        /// Observed by polling. The device did this on its own.
+        case observed
+        /// Within the settling window after this app rebooted the device.
+        case reboot
+    }
+
     public let id: UUID
     public let device: Device
     /// Nil when the device was seen for the first time after priming.
     public let from: DeviceStatus?
     public let to: DeviceStatus
     public let at: Date
+    public let cause: Cause
 
-    public init(id: UUID = UUID(), device: Device, from: DeviceStatus?, to: DeviceStatus, at: Date) {
+    public init(
+        id: UUID = UUID(),
+        device: Device,
+        from: DeviceStatus?,
+        to: DeviceStatus,
+        at: Date,
+        cause: Cause = .observed
+    ) {
         self.id = id
         self.device = device
         self.from = from
         self.to = to
         self.at = at
+        self.cause = cause
     }
 
-    /// Worth interrupting someone for.
+    /// History written before `cause` existed decodes as `.observed` rather
+    /// than failing -- a decode failure here empties the user's whole history.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        device = try container.decode(Device.self, forKey: .device)
+        from = try container.decodeIfPresent(DeviceStatus.self, forKey: .from)
+        to = try container.decode(DeviceStatus.self, forKey: .to)
+        at = try container.decode(Date.self, forKey: .at)
+        cause = try container.decodeIfPresent(Cause.self, forKey: .cause) ?? .observed
+    }
+
+    /// The same change, reattributed. Used when a reboot this app asked for
+    /// turns out to explain a drop the detector just confirmed.
+    public func attributed(to cause: Cause) -> StatusChange {
+        StatusChange(id: id, device: device, from: from, to: to, at: at, cause: cause)
+    }
+
+    /// Worth interrupting someone for. A change this app caused is not.
     public var isRegression: Bool {
-        to == .offline || to == .pending
+        cause == .observed && (to == .offline || to == .pending)
     }
 
     public var isRecovery: Bool {

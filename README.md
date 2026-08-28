@@ -7,6 +7,15 @@ and tells you when one goes offline.
 - Full window with a sortable, filterable table and a per-device detail pane
 - Notifications on confirmed outages and recoveries, with debouncing, quiet hours
   and per-device mutes
+- Email alerts over SMTP, batched so one network fault sends one message
+- YMCS alarms surfaced next to this app's own view, since a phone can be
+  reachable and still have a critical alarm against it
+- Accessory health, so a phone with a dead expansion module stops looking fine
+- Per-device diagnostics run on the phone: ping, traceroute, system log, config
+  file, screenshot and packet capture
+- Call quality and the YMCS operation log, in an Activity window
+- Restart phones: one, a selection, or everything currently listed — and on a
+  schedule
 - On-disk history of status changes, so you can see which phones drop repeatedly
 
 ## Requirements
@@ -68,15 +77,17 @@ xattr -dr com.apple.quarantine /Applications/YealinkMonitor.app
 or copy it by a route that never sets it (`scp`, `rsync`, a Finder copy from a
 USB disk). Notarizing with a Developer ID removes this step entirely.
 
-**The secret is deliberately not embedded in the bundle.** The YMCS AccessKey
-authorises device restart, factory reset, firmware push and configuration push
-across the entire enterprise -- this app only reads, but the credential does not
-know that. Since YMCS issues one pair per enterprise, it cannot be scoped down
-or rotated for this app alone, so a bundle with the key baked in would be a
-copyable, unrevokable grant of that capability. A string in a binary comes
-straight back out with `strings`.
+**Think before embedding the secret.** `make-app.sh --embed` will bake the
+credentials into the bundle so a copied app just works, and that is a real
+decision rather than a convenience. The YMCS AccessKey authorises device
+restart, factory reset, firmware push and configuration push across the entire
+enterprise. Since YMCS issues one pair per enterprise it cannot be scoped down
+or rotated for this app alone, so an embedded bundle is a copyable, unrevokable
+grant of that capability -- and a string in a binary comes straight back out
+with `strings`. An embedded build is a credential you are handing out, not
+merely an app; `provision.sh` exists so you do not have to.
 
-For the same reason: never commit the secret. This repository is public.
+Never commit the secret. This repository is public.
 
 ### 4. Tests
 
@@ -85,6 +96,15 @@ swift test
 ```
 
 ## How it polls
+
+Monitoring starts when the app launches, not when you first open the popover.
+That is worth stating because it is easy to get wrong: with
+`.menuBarExtraStyle(.window)` SwiftUI builds the popover's content lazily, so
+anything hung off it never runs on a Mac that boots and is left alone. The
+polling loop is started from the menu bar *label* instead, which is rendered
+immediately. Nothing on that path is allowed to block -- notification permission
+is requested afterwards, and the keychain is not touched at all unless the
+bundle carries embedded credentials.
 
 YMCS does support pushed events -- there is an Event Subscription panel in the
 console, under System > Integration > API -- but delivery needs a publicly
@@ -98,9 +118,18 @@ credentials, so the loop stays cheap:
 | `heartbeat` (default 60s) | `GET /v2/dm/statistics/deviceCount?deviceStatus=0` | 1 request |
 | when that count moves | `POST /v2/dm/listDevices`, paged at 100 | ~1 request per 100 phones |
 | `fullRefresh` (default 600s) | full listing regardless | same |
+| `detailRefresh` (default 1800s) | `GET /v2/dm/devices/{id}` for each phone | **1 request per phone** |
 | while a device is mid-debounce | full listing, so confirmations can accumulate | same |
 
-A 100-phone fleet at rest costs roughly one request per minute.
+A 100-phone fleet at rest costs roughly one request per minute, plus a burst of
+one-per-phone every half hour.
+
+That last sweep is the expensive one, and it exists because `listDevices`
+returns no LAN IP, no serial and no SIP line state -- only
+`GET /v2/dm/devices/{id}` does, one phone at a time. It runs four at a time,
+paced by the rate limiter, and the device list is drawn before it starts, so a
+slow sweep never delays the window. The **LAN IP** column reads "—" until the
+sweep reaches that phone.
 
 ### Known limits
 
@@ -123,6 +152,13 @@ Sources/YMCSKit/          API client, polling engine — no UI, fully tested
   RateLimiter.swift       GCRA shaper + mandated 30s backoff on 429
   Monitor.swift           heartbeat/full-refresh polling loop, snapshots
   Transitions.swift       debounced online/offline change detection
+  AlertDigest.swift       batching and rate limiting for email alerts
+  RebootSchedule.swift    calendar-correct scheduled restart times
+  Models.swift            devices, alarms, accessories, calls, logs
+Sources/SMTPKit/          minimal SMTP submission client — no UI, fully tested
+  SMTPClient.swift        EHLO/STARTTLS/AUTH/DATA conversation
+  SMTPMessage.swift       RFC 5322 headers and quoted-printable body
+  SMTPTransport.swift     CFStream socket, upgradable to TLS in place
 Sources/YealinkMonitor/   SwiftUI app
 Scripts/smoke-test.sh     Phase 0 API check
 Scripts/provision.sh      seed a Mac's keychain and preferences
@@ -130,9 +166,128 @@ Scripts/make-app.sh       build the .app bundle without Xcode
 Scripts/make-icon.swift   draws AppIcon.icns from paths at every size
 ```
 
+## Muting and archiving
+
+Two different things, deliberately kept apart:
+
+- **Mute** — "stop telling me about this phone". It stays in the fleet, stays in
+  the counts and still shows its real status; only the notification is withheld.
+  Right for a phone with a known fault someone is already dealing with.
+- **Archive** — "this phone is not in service". A spare in a cupboard is *meant*
+  to be offline, and a monitor showing a permanent red triangle for it trains
+  you to ignore red triangles. Archived phones are removed from the menu bar
+  count, from the popover, from the status filters and their counts, from alerts
+  and email, and from bulk actions — so **Restart All Listed** cannot reach the
+  spare in the cupboard.
+
+Archive from the right-click menu in the Phones window or the button in the
+detail pane. They are not hidden, just moved: the status filter gains an
+**Archived** entry, they are marked in the export's own column, and Settings ▸
+Alerts has a **Restore All**.
+
+A schedule that already names a phone you later archive keeps naming it, shown
+with an archive marker in the schedule editor. Silently dropping it would change
+what a saved schedule does without saying so.
+
+## Exporting
+
+The Phones window has an **Export** menu with the same two scopes as Restart:
+everything currently listed (so the filters above are in force -- the menu says
+"All Listed" for that reason) or just the selection. The CSV carries what the
+window shows plus what the detail sweep has filled in: IP, serial, SIP line
+counts, unregistered lines, accessory faults, active alarms and firmware drift.
+
+It is written with a UTF-8 BOM, because Excel otherwise reads the file in the
+system's legacy encoding and mangles anything non-ASCII.
+
+## Restarting phones
+
+Restart is the only write this app can perform. Factory reset is not implemented
+and is not going to be: `POST /v2/dm/device/reset` differs from the reboot
+endpoint by one path segment and takes an identical body, so the protection
+against firing it by accident is that no code here can express it.
+
+Three things worth knowing:
+
+- **An offline phone cannot be restarted.** The command goes to YMCS, which has
+  no way to reach a phone that is not talking to it. YMCS accepts the request
+  regardless, so the app says so rather than reporting success.
+- **A restart looks exactly like an outage.** For a settling window afterwards
+  (10 minutes by default) the resulting drop is recorded but not alerted. A
+  phone that has not come back when the window closes *is* reported.
+- **A partial failure is an HTTP 200.** The endpoint answers success and puts
+  the detail in `errors[]`, so the app reports counts rather than treating a
+  non-error as a job done.
+
+### Scheduled restarts
+
+Settings ▸ Schedules. A schedule is a fixed list of phones, a time, and the days
+it runs — saved by device id rather than by site or filter, because a
+filter-based schedule silently grows as phones are added.
+
+**Schedules only fire while this app is running and the Mac is awake.** That is
+a property of a menu bar app, not something this code can work around: it would
+need a LaunchAgent or a server-side scheduler, and YMCS has no scheduling
+endpoint. An occurrence missed by less than the grace window runs late and says
+so; one missed by longer is recorded as skipped rather than firing at a
+surprising time. Every run reports by notification, and by email if configured.
+
+## Diagnostics
+
+Select a phone in the Phones window and use the buttons in its detail pane.
+Everything there runs **on the phone**, which is the point: `ping 10.0.0.1` from
+this Mac says nothing about whether the handset in the back office can reach its
+gateway.
+
+Each one is asynchronous — the request only asks the phone to do something, and
+the result arrives later as a file. Ping and traceroute output is shown inline;
+logs, config files, screenshots and captures are saved to your Downloads folder
+and revealed in Finder. A packet capture runs for its full duration (three
+minutes minimum, per the API) before the file exists.
+
+The file type is worked out from the bytes rather than from the documentation,
+which is wrong about it: `exportSyslog` is described as producing a text file
+and actually returns a zip of `datalog/*.log`. Archives are expanded on arrival,
+so **Show in Finder** opens a folder of readable logs rather than a file that
+looks corrupt.
+
+## Activity
+
+The **Activity…** window has two things YMCS knows that the device list does not:
+
+- **Call quality** — how calls actually sounded, with the MOS score (1-5) for
+  the worse direction. A phone that is online around the clock and rates Bad on
+  every call is a fault nothing else here can show.
+
+  Two things the API document gets wrong here, both confirmed against a live
+  tenant: `duration` is documented as milliseconds and is actually seconds, so
+  durations are derived from the start and end timestamps instead; and
+  `callerURI`/`calleeURI` are documented but come back null, so the table shows
+  the account and MOS rather than two columns that can never fill.
+- **Operation log** — what anyone changed in YMCS, this app included. It answers
+  "did someone push config to this phone just before it started dropping?", and
+  it is the independent record of restarts this app performed.
+
+Both are fetched when you open the window rather than polled, because neither
+feeds an alert and polling them would spend the enterprise's request budget on
+data nobody is looking at.
+
+## Email alerts
+
+Settings ▸ Email. Needs an SMTP relay that will accept authenticated submission
+— a provider mailbox or an internal relay. STARTTLS on port 587 and implicit TLS
+on port 465 are both supported; the password lives in the login keychain next to
+the YMCS secret and is never sent over an unencrypted connection.
+
+Alerts are batched (60s by default) so a switch failure that takes forty phones
+offline sends one email rather than forty, and capped per hour. Over the cap,
+alerts are held and sent together rather than dropped. Quiet hours do **not**
+apply to email by default: overnight is usually when you most want to be told.
+
 ## Not done yet
 
 - App Sandbox and notarization (needs a Developer ID; ad-hoc signing only for
   now, which means Gatekeeper blocks quarantined copies on other Macs)
-- Anything that writes to devices — reboot, reconfigure, firmware push are all
-  deliberately left out
+- Factory reset, configuration push and firmware push — deliberately left out.
+  Firmware is read-only here: the table marks a phone running an older build
+  than the rest of its model, and stops there.

@@ -28,8 +28,26 @@ final class Notifier {
 
     var canNotify: Bool { isAuthorized }
 
+    /// A one-off notice that is not about a device changing status -- the
+    /// result of a scheduled restart, for instance. Quiet hours do not apply:
+    /// this is the answer to something the user asked the app to do.
+    func postReport(title: String, body: String) {
+        guard isAuthorized else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        )
+    }
+
     func post(_ change: StatusChange, settings: AppSettings, snapshot: MonitorSnapshot, now: Date = Date()) {
         guard settings.notificationsEnabled, isAuthorized else { return }
+        // A drop this app caused by rebooting the phone is not news. It is still
+        // recorded in the history, just not interrupted with.
+        guard change.cause == .observed else { return }
+        // A phone that is not in service cannot have an outage.
+        guard !settings.archivedDeviceIDs.contains(change.device.id) else { return }
         guard !settings.mutedDeviceIDs.contains(change.device.id) else { return }
         if change.isRecovery && !settings.notifyOnRecovery { return }
         // Quiet hours suppress routine alerts. The status is still recorded and

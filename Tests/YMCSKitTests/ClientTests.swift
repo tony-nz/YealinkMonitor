@@ -243,6 +243,238 @@ struct ClientTests {
         #expect(await transport.requestCount == 0)
     }
 
+    @Test("A reboot larger than one page is chunked and the results are summed")
+    func rebootChunks() async throws {
+        let server = FakeServer(devices: [])
+        let client = YMCSClient(
+            transport: server.makeTransport(),
+            credentialsProvider: StaticCredentialsProvider(.test),
+            rateLimiter: RateLimiter(requestsPerSecond: 10_000, burst: 1000)
+        )
+
+        let ids = (1...250).map(String.init)
+        let result = try await client.rebootDevices(ids: ids)
+
+        #expect(server.rebootRequests.count == 3)
+        #expect(server.rebootRequests.map { ($0["deviceIds"] as? [String] ?? []).count } == [100, 100, 50])
+        // One number for the user, not three.
+        #expect(result.total == 250)
+        #expect(result.successCount == 250)
+    }
+
+    @Test("An empty reboot makes no request at all")
+    func rebootOfNothing() async throws {
+        let server = FakeServer(devices: [])
+        let client = YMCSClient(
+            transport: server.makeTransport(),
+            credentialsProvider: StaticCredentialsProvider(.test),
+            rateLimiter: RateLimiter(requestsPerSecond: 10_000, burst: 1000)
+        )
+
+        let result = try await client.rebootDevices(ids: [])
+
+        #expect(result.total == 0)
+        #expect(server.totalRequests == 0)
+    }
+
+    // MARK: - Diagnostics
+
+    private func diagnosticClient(_ server: FakeServer) -> YMCSClient {
+        YMCSClient(
+            transport: server.makeTransport(),
+            credentialsProvider: StaticCredentialsProvider(.test),
+            rateLimiter: RateLimiter(requestsPerSecond: 10_000, burst: 1000)
+        )
+    }
+
+    @Test("Ping sends the documented body")
+    func pingBody() async throws {
+        let server = FakeServer()
+        let ticket = try await diagnosticClient(server).startPing(deviceID: "d1", host: "10.0.0.1", times: 4)
+
+        #expect(ticket.diagnosisId == "diag-1")
+        let request = try #require(server.diagnosticRequests.first)
+        #expect(request.path == "/v2/dm/devices/d1/ping")
+        #expect(request.body["host"] as? String == "10.0.0.1")
+        #expect(request.body["times"] as? Int == 4)
+    }
+
+    @Test("Probe counts outside the documented range are clamped, not sent")
+    func probeCountClamped() async throws {
+        let server = FakeServer()
+        let client = diagnosticClient(server)
+        _ = try await client.startPing(deviceID: "d1", host: "h", times: 99)
+        _ = try await client.startTraceroute(deviceID: "d1", host: "h", times: 0)
+
+        // Sending 99 would just cost a round trip to be told 1-30.
+        #expect(server.diagnosticRequests[0].body["times"] as? Int == 30)
+        #expect(server.diagnosticRequests[1].body["times"] as? Int == 1)
+    }
+
+    @Test("Packet capture clamps its duration and only sends a filter when asked to")
+    func packetCaptureBody() async throws {
+        let server = FakeServer()
+        let client = diagnosticClient(server)
+        _ = try await client.startPacketCapture(
+            deviceID: "d1", networkInterface: "wlan0", type: .rtp, filter: "ignored", duration: 10
+        )
+        _ = try await client.startPacketCapture(
+            deviceID: "d1", type: .custom, filter: "port 5060", duration: 99_999
+        )
+
+        #expect(server.diagnosticRequests[0].body["duration"] as? Int == 180)
+        #expect(server.diagnosticRequests[0].body["networkInterface"] as? String == "wlan0")
+        // The API only reads `filter` for the custom type; sending it otherwise
+        // invites confusion about why it had no effect.
+        #expect(server.diagnosticRequests[0].body["filter"] == nil)
+        #expect(server.diagnosticRequests[1].body["duration"] as? Int == 3600)
+        #expect(server.diagnosticRequests[1].body["filter"] as? String == "port 5060")
+    }
+
+    @Test("A diagnostic is polled until it finishes and yields its download link")
+    func awaitDiagnosticPolls() async throws {
+        let server = FakeServer()
+        server.reportInProgress(times: 2)
+
+        let status = try await diagnosticClient(server)
+            .awaitDiagnostic(id: "diag-1", pollInterval: .milliseconds(1))
+
+        #expect(status.status == .success)
+        #expect(status.downloadURL?.absoluteString == "https://example.com/log.txt")
+        #expect(server.count("/v2/dm/diagnosis/diag-1/status") == 3)
+    }
+
+    @Test("A failed diagnostic finishes without a download link")
+    func failedDiagnostic() async throws {
+        let server = FakeServer()
+        server.finishDiagnostics(as: "failure")
+
+        let status = try await diagnosticClient(server)
+            .awaitDiagnostic(id: "diag-1", pollInterval: .milliseconds(1))
+
+        #expect(status.status == .failure)
+        #expect(status.downloadURL == nil)
+    }
+
+    @Test("A diagnostic that never finishes times out rather than waiting forever")
+    func diagnosticTimeout() async throws {
+        let server = FakeServer()
+        // A phone that drops mid-diagnostic never reports anything again.
+        server.reportInProgress(times: .max)
+
+        await #expect(throws: YMCSError.self) {
+            try await diagnosticClient(server).awaitDiagnostic(
+                id: "diag-1",
+                pollInterval: .milliseconds(1),
+                timeout: .milliseconds(10)
+            )
+        }
+    }
+
+    @Test("Accessories for many devices come back as a bare array")
+    func batchAccessories() async throws {
+        let server = FakeServer(accessories: [
+            .stub("p1", parent: "d1"),
+            .stub("p2", parent: "d2", status: .offline),
+        ])
+
+        let parts = try await diagnosticClient(server).accessories(forDeviceIDs: ["d1", "d2"])
+
+        #expect(parts.count == 2)
+        // The batch endpoint quotes connStatus; the per-device one does not.
+        #expect(parts.first { $0.id == "p2" }?.isProblem == true)
+    }
+
+    // MARK: - Call quality and logs
+
+    @Test("A call query sends its filter in milliseconds")
+    func callFilter() async throws {
+        let server = FakeServer()
+        let since = Date(timeIntervalSince1970: 1_700_000_000)
+        let until = Date(timeIntervalSince1970: 1_700_086_400)
+
+        let page = try await diagnosticClient(server).listCalls(
+            mac: "001565bbb1a9", since: since, until: until
+        )
+
+        #expect(page.items.first?.quality == .good)
+        let filter = try #require(server.bodies(for: "/v2/dm/listQoes").first?["filter"] as? [String: Any])
+        #expect(filter["mac"] as? String == "001565bbb1a9")
+        // YMCS takes epoch milliseconds; seconds would silently query 1970.
+        #expect(filter["startTime"] as? Int64 == 1_700_000_000_000)
+        #expect(filter["endTime"] as? Int64 == 1_700_086_400_000)
+    }
+
+    @Test("Call duration comes from the timestamps, not the mislabelled field")
+    func callDurationUnits() async throws {
+        let server = FakeServer()
+        let page = try await diagnosticClient(server).listCalls()
+        let call = try #require(page.items.first)
+
+        // The document calls `duration` milliseconds. The server sends 41 for a
+        // 41-second call, so trusting the document renders every call as 0s.
+        #expect(call.duration == 41)
+        #expect(call.durationSeconds == 41)
+    }
+
+    @Test("An uppercase quality still decodes")
+    func callQualityCase() async throws {
+        let server = FakeServer()
+        let page = try await diagnosticClient(server).listCalls()
+
+        // The document's example says "Good"; the server sends "GOOD".
+        #expect(page.items.first?.quality == .good)
+    }
+
+    @Test("A call query with no filter omits the key entirely")
+    func emptyCallFilter() async throws {
+        let server = FakeServer()
+        _ = try await diagnosticClient(server).listCalls()
+
+        #expect(server.bodies(for: "/v2/dm/listQoes").first?["filter"] == nil)
+    }
+
+    @Test("Call quality statistics send a time range only as a complete pair")
+    func statisticsTimeRange() async throws {
+        let server = FakeServer()
+        let client = diagnosticClient(server)
+        // The API ignores a start without an end, so sending one alone would
+        // silently return all-time figures under a date heading.
+        _ = try await client.callQualityStatistics(since: Date(timeIntervalSince1970: 1))
+        _ = try await client.callQualityStatistics(
+            since: Date(timeIntervalSince1970: 1),
+            until: Date(timeIntervalSince1970: 2)
+        )
+
+        let bodies = server.bodies(for: "/v2/dm/statistics/qoe")
+        #expect(bodies[0]["startTime"] == nil)
+        #expect(bodies[1]["startTime"] as? Int64 == 1000)
+        #expect(bodies[1]["endTime"] as? Int64 == 2000)
+    }
+
+    @Test("Quality statistics decode the documented fields")
+    func statisticsDecode() async throws {
+        let server = FakeServer()
+        let stats = try await diagnosticClient(server).callQualityStatistics()
+
+        #expect(stats.total == 100)
+        #expect(stats.badTotal == 7)
+        #expect(stats.badPercentage == 7.0)
+    }
+
+    @Test("An operation log decodes despite the document's misspelled field")
+    func operationLogDecoding() async throws {
+        let server = FakeServer()
+        let page = try await diagnosticClient(server).listOperationLogs()
+
+        let log = try #require(page.items.first)
+        // The field table says operationType, the worked example says
+        // operationTypetype. Both are accepted.
+        #expect(log.operationType == "i18n.yiot.backend.operation.device.management.restart")
+        #expect(log.operator == "tony")
+        #expect(OperationLog.readable(log.operationType) == "Management Restart")
+    }
+
     @Test("Region selection changes the host that is contacted")
     func regionRouting() async throws {
         let transport = StubTransport()

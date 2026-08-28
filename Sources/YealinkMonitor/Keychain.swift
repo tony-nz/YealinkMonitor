@@ -2,13 +2,15 @@ import Foundation
 import Security
 import YMCSKit
 
-/// Stores the YMCS client secret in the login keychain.
+/// Stores long-lived secrets in the login keychain.
 ///
-/// The secret is a long-lived credential for the whole enterprise, so it never
-/// goes near UserDefaults, a plist or a log line.
+/// The YMCS secret is a credential for the whole enterprise and the SMTP
+/// password is a credential for a mailbox, so neither goes near UserDefaults, a
+/// plist or a log line.
 enum Keychain {
     static let service = "nz.co.myers.YealinkMonitor"
     static let account = "ymcs-client-secret"
+    static let smtpAccount = "smtp-password"
 
     enum Failure: Error, LocalizedError {
         case status(OSStatus)
@@ -22,8 +24,8 @@ enum Keychain {
         }
     }
 
-    static func readSecret() throws -> String? {
-        var query = baseQuery
+    static func readSecret(account: String = Keychain.account) throws -> String? {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -40,19 +42,19 @@ enum Keychain {
         }
     }
 
-    static func writeSecret(_ secret: String) throws {
+    static func writeSecret(_ secret: String, account: String = Keychain.account) throws {
         guard !secret.isEmpty else {
-            try deleteSecret()
+            try deleteSecret(account: account)
             return
         }
         let data = Data(secret.utf8)
         let status = SecItemUpdate(
-            baseQuery as CFDictionary,
+            baseQuery(account: account) as CFDictionary,
             [kSecValueData as String: data] as CFDictionary
         )
         if status == errSecSuccess { return }
         if status == errSecItemNotFound {
-            var query = baseQuery
+            var query = baseQuery(account: account)
             query[kSecValueData as String] = data
             // Available after first unlock so the app can poll after a reboot
             // without the user having to open it first.
@@ -64,14 +66,14 @@ enum Keychain {
         throw Failure.status(status)
     }
 
-    static func deleteSecret() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
+    static func deleteSecret(account: String = Keychain.account) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw Failure.status(status)
         }
     }
 
-    private static var baseQuery: [String: Any] {
+    private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

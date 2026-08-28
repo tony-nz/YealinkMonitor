@@ -252,6 +252,443 @@ struct MonitorTests {
         await monitor.poll()
         #expect(server.count("/v2/dm/listDevices") == 2)
     }
+
+    @Test("Only active alarms reach the snapshot")
+    func activeAlarmsOnly() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online, name: "Reception")],
+            alarms: [
+                .stub("a1", mac: "001565bbb1a9", event: "Offline", status: .active),
+                .stub("a2", mac: "001565bbb1a9", event: "Handset lost", status: .solved),
+                .stub("a3", mac: "001565bbb1a9", event: "Noisy line", status: .ignored),
+            ]
+        )
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        // `listAlarms` has no status filter, so solved and ignored alarms come
+        // back with the active ones and must be dropped here.
+        #expect(snapshot.alarms.map(\.id) == ["a1"])
+        #expect(snapshot.alarmTotal == 3)
+    }
+
+    @Test("Alarms are matched to devices across MAC formatting")
+    func alarmsMatchOnNormalisedMAC() async throws {
+        let device = Device(id: "1", mac: "001565bbb1a9", deviceStatus: .online)
+        let server = FakeServer(
+            devices: [device],
+            // listDevices returns bare MACs, listAlarms punctuated ones.
+            alarms: [.stub("a1", mac: "00:15:65:BB:B1:A9")]
+        )
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        #expect(snapshot.alarms(for: device).map(\.id) == ["a1"])
+        #expect(snapshot.alarmedDeviceCount == 1)
+    }
+
+    @Test("A failing alarm list does not fail the poll")
+    func alarmFailureIsNotFatal() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .offline)])
+        server.failAlarms(with: 500)
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        // Alarms are decoration; the device list is the product.
+        #expect(snapshot.devices.count == 2)
+        #expect(snapshot.failure == nil)
+        #expect(snapshot.alarms.isEmpty)
+    }
+
+    @Test("Alarms are not refetched on every full refresh")
+    func alarmsRespectTheirOwnInterval() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online)],
+            alarms: [.stub("a1", mac: "001565bbb1a9")]
+        )
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { configuration in
+            configuration.alarmRefresh = .seconds(300)
+        }
+
+        await monitor.poll()
+        clock.value.addTimeInterval(60)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/listAlarms") == 1)
+
+        clock.value.addTimeInterval(300)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/listAlarms") == 2)
+    }
+
+    @Test("A cleared alarm disappears from the snapshot on the next alarm refresh")
+    func clearedAlarmsAreDropped() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online)],
+            alarms: [.stub("a1", mac: "001565bbb1a9")]
+        )
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock)
+
+        await monitor.poll()
+        #expect(await monitor.current.alarms.count == 1)
+
+        server.alarms = []
+        clock.value.addTimeInterval(600)
+        await monitor.refreshNow()
+        #expect(await monitor.current.alarms.isEmpty)
+    }
+
+    // MARK: - Reboot
+
+    @Test("A reboot sends the documented body and reports what YMCS accepted")
+    func rebootSendsDocumentedBody() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .online)])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let result = try await monitor.reboot(deviceIDs: ["1", "2"])
+
+        #expect(result.total == 2)
+        #expect(result.successCount == 2)
+        #expect(result.didFullySucceed)
+        let body = try #require(server.rebootRequests.first)
+        #expect(body["deviceIds"] as? [String] == ["1", "2"])
+        // The model lookup says these are phones; the device list never does.
+        #expect(body["deviceType"] as? Int == 1)
+    }
+
+    @Test("A partial failure is reported rather than treated as success")
+    func rebootPartialFailure() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .online)])
+        server.rejectReboots(of: ["2"])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let result = try await monitor.reboot(deviceIDs: ["1", "2"])
+
+        // The endpoint answers 200 for this, so nothing throws and the counts
+        // are the only signal there is.
+        #expect(result.failureCount == 1)
+        #expect(result.didFullySucceed == false)
+        #expect(result.errors?.compactMap(\.field) == ["2"])
+    }
+
+    @Test("A rebooted phone dropping is attributed to the reboot, not reported as an outage")
+    func rebootSuppressesTheDrop() async throws {
+        let server = FakeServer(devices: [.stub("1", .online, name: "Reception")])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.confirmations = 1 }
+        await monitor.poll()
+
+        _ = try await monitor.reboot(deviceIDs: ["1"], settlingWindow: .seconds(600))
+
+        let changes = monitor.changes
+        server.setStatus(.offline, forDeviceID: "1")
+        clock.value.addTimeInterval(60)
+        await monitor.poll()
+
+        let change = try #require(await firstChange(changes))
+        #expect(change.to == .offline)
+        #expect(change.cause == .reboot)
+        // The alerting layer keys off this: a drop we caused is not an outage.
+        #expect(change.isRegression == false)
+    }
+
+    @Test("A phone that comes back inside the window is not announced as a recovery")
+    func rebootSuppressesTheRecovery() async throws {
+        let server = FakeServer(devices: [.stub("1", .online)])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.confirmations = 1 }
+        await monitor.poll()
+        _ = try await monitor.reboot(deviceIDs: ["1"], settlingWindow: .seconds(600))
+
+        server.setStatus(.offline, forDeviceID: "1")
+        clock.value.addTimeInterval(60)
+        await monitor.poll()
+
+        let changes = monitor.changes
+        server.setStatus(.online, forDeviceID: "1")
+        clock.value.addTimeInterval(60)
+        await monitor.poll()
+
+        let change = try #require(await firstChange(changes))
+        #expect(change.to == .online)
+        #expect(change.cause == .reboot)
+    }
+
+    @Test("A phone that never comes back is reported once the window closes")
+    func rebootFailureSurfacesAtExpiry() async throws {
+        let server = FakeServer(devices: [.stub("1", .online, name: "Reception")])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.confirmations = 1 }
+        await monitor.poll()
+        _ = try await monitor.reboot(deviceIDs: ["1"], settlingWindow: .seconds(600))
+
+        server.setStatus(.offline, forDeviceID: "1")
+        clock.value.addTimeInterval(60)
+        await monitor.poll()
+
+        let changes = monitor.changes
+        // The detector settled on offline while suppressed, so without the
+        // expiry check this phone would stay silently dead forever.
+        clock.value.addTimeInterval(600)
+        await monitor.poll()
+
+        let change = try #require(await firstChange(changes))
+        #expect(change.from == .online)
+        #expect(change.to == .offline)
+        #expect(change.cause == .observed)
+        #expect(change.isRegression)
+    }
+
+    @Test("A phone YMCS refused to reboot is not given a settling window")
+    func rejectedRebootIsNotSuppressed() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .online)])
+        server.rejectReboots(of: ["2"])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.confirmations = 1 }
+        await monitor.poll()
+
+        _ = try await monitor.reboot(deviceIDs: ["1", "2"])
+
+        // Nothing was done to device 2, so whatever happens to it next is real.
+        #expect(await monitor.settlingDeviceIDs == ["1"])
+    }
+
+    @Test("A settling window keeps the poller taking full listings")
+    func settlingForcesFullRefresh() async throws {
+        let server = FakeServer(devices: [.stub("1", .online)])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock)
+        await monitor.poll()
+        _ = try await monitor.reboot(deviceIDs: ["1"], settlingWindow: .seconds(600))
+
+        clock.value.addTimeInterval(60)
+        await monitor.poll()
+
+        // The cheap offline count cannot say *which* phone came back.
+        #expect(server.count("/v2/dm/listDevices") == 2)
+        #expect(server.count("/v2/dm/statistics/deviceCount") == 0)
+    }
+
+    @Test("Reboot ids are deduplicated before they reach the server")
+    func rebootDeduplicates() async throws {
+        let server = FakeServer(devices: [.stub("1", .online)])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let result = try await monitor.reboot(deviceIDs: ["1", "1", "1"])
+
+        // Otherwise the server's own totals count the same phone three times.
+        #expect(result.total == 1)
+        #expect(server.rebootRequests.first?["deviceIds"] as? [String] == ["1"])
+    }
+
+    @Test("A room device is rebooted as a room device")
+    func rebootUsesTheResolvedDeviceType() async throws {
+        var room = Device.stub("9", .online, name: "Boardroom")
+        room = Device(
+            id: room.id, mac: room.mac, sn: room.sn, name: room.name,
+            modelId: "m9", siteId: room.siteId,
+            programVersion: room.programVersion, deviceStatus: room.deviceStatus
+        )
+        let server = FakeServer(devices: [.stub("1", .online), room])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        _ = try await monitor.reboot(deviceIDs: ["1", "9"])
+
+        // One call per type: the endpoint takes a single deviceType for the
+        // whole batch, and sending the wrong one reboots nothing.
+        let byType = Dictionary(
+            uniqueKeysWithValues: server.rebootRequests.map {
+                ($0["deviceType"] as? Int ?? -1, $0["deviceIds"] as? [String] ?? [])
+            }
+        )
+        #expect(byType[1] == ["1"])
+        #expect(byType[3] == ["9"])
+    }
+
+    // MARK: - Accessories
+
+    @Test("Accessories are grouped under the device they are attached to")
+    func accessoriesAreGrouped() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online), .stub("2", .online)],
+            accessories: [
+                .stub("p1", parent: "1", model: "EXP50"),
+                .stub("p2", parent: "1", model: "WH66"),
+                .stub("p3", parent: "2", model: "CP700"),
+            ]
+        )
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        #expect(snapshot.accessories["1"]?.count == 2)
+        #expect(snapshot.accessories["2"]?.map(\.displayName) == ["CP700"])
+    }
+
+    @Test("A phone with a dead accessory is flagged even though the phone is online")
+    func accessoryProblemsAreVisible() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online, name: "Reception")],
+            accessories: [.stub("p1", parent: "1", status: .offline)]
+        )
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        // The failure the device status alone hides completely.
+        #expect(snapshot.problems.isEmpty)
+        #expect(snapshot.devicesWithAccessoryProblems.map(\.id) == ["1"])
+    }
+
+    @Test("An accessory that has never reported is not treated as a fault")
+    func neverReportedAccessoryIsNotAProblem() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online)],
+            accessories: [.stub("p1", parent: "1", status: .notReported)]
+        )
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        // Registered in YMCS but never plugged in is not a fault to alert on.
+        #expect(await monitor.current.devicesWithAccessoryProblems.isEmpty)
+    }
+
+    @Test("Accessories are not refetched on every full refresh")
+    func accessoriesRespectTheirOwnInterval() async throws {
+        let server = FakeServer(
+            devices: [.stub("1", .online)],
+            accessories: [.stub("p1", parent: "1")]
+        )
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.accessoryRefresh = .seconds(900) }
+
+        await monitor.poll()
+        clock.value.addTimeInterval(600)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/device/listParts") == 1)
+
+        clock.value.addTimeInterval(900)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/device/listParts") == 2)
+    }
+
+    // MARK: - Firmware
+
+    @Test("Firmware versions compare numerically, not as strings")
+    func firmwareOrdering() {
+        // The case a string comparison gets backwards.
+        #expect(Device.isFirmware("70.9.0.1", olderThan: "70.83.0.1"))
+        #expect(!Device.isFirmware("70.83.0.68", olderThan: "70.83.0.68"))
+        #expect(Device.isFirmware("70.83", olderThan: "70.83.0.1"))
+        #expect(!Device.isFirmware("71.0.0.0", olderThan: "70.99.9.9"))
+    }
+
+    @Test("The fleet reference is the commonest version, not the highest")
+    func fleetFirmwareIsModal() async throws {
+        let server = FakeServer(devices: [
+            .stubFirmware("1", "70.83.0.68"),
+            .stubFirmware("2", "70.83.0.68"),
+            .stubFirmware("3", "70.83.0.68"),
+            // One phone on a newer build must not make the other three look
+            // out of date.
+            .stubFirmware("4", "70.90.0.1"),
+            .stubFirmware("5", "70.10.0.1"),
+        ])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        #expect(snapshot.fleetFirmware["m1"] == "70.83.0.68")
+        #expect(snapshot.isBehindFleetFirmware(snapshot.devices.first { $0.id == "5" }!))
+        #expect(!snapshot.isBehindFleetFirmware(snapshot.devices.first { $0.id == "4" }!))
+        #expect(!snapshot.isBehindFleetFirmware(snapshot.devices.first { $0.id == "1" }!))
+    }
+
+    @Test("A device with no firmware or model is never reported as behind")
+    func firmwareUnknownIsNotBehind() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stubFirmware("2", "70.83.0.68")])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        #expect(!snapshot.isBehindFleetFirmware(snapshot.devices.first { $0.id == "1" }!))
+    }
+
+    // MARK: - Device detail sweep
+
+    @Test("The detail sweep fills in what the device list leaves out")
+    func detailSweepFillsIPs() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .online)])
+        let monitor = makeMonitor(server, clock: MutableDate(.init(timeIntervalSince1970: 0)))
+        await monitor.poll()
+
+        let snapshot = await monitor.current
+        // listDevices returns no IP at all; only the per-device endpoint does.
+        #expect(snapshot.lanIP(for: snapshot.devices[0]) == "10.42.0.1")
+        #expect(snapshot.detail(for: snapshot.devices[1])?.sn == "SN2")
+    }
+
+    @Test("The sweep costs one request per phone and then stops")
+    func detailSweepCost() async throws {
+        let server = FakeServer(devices: (1...5).map { .stub("\($0)", .online) })
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock) { $0.detailRefresh = .seconds(1800) }
+
+        await monitor.poll()
+        #expect(server.count("/v2/dm/devices/1") == 1)
+
+        // Well inside the interval: the expensive sweep must not repeat.
+        clock.value.addTimeInterval(600)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/devices/1") == 1)
+
+        clock.value.addTimeInterval(1800)
+        await monitor.refreshNow()
+        #expect(server.count("/v2/dm/devices/1") == 2)
+    }
+
+    @Test("A phone that has left the fleet loses its cached detail")
+    func detailSweepDropsRemovedDevices() async throws {
+        let server = FakeServer(devices: [.stub("1", .online), .stub("2", .online)])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock)
+        await monitor.poll()
+        #expect(await monitor.current.details.count == 2)
+
+        server.devices = [.stub("1", .online)]
+        clock.value.addTimeInterval(1800)
+        await monitor.refreshNow()
+
+        let snapshot = await monitor.current
+        // Otherwise a decommissioned phone's IP lingers in the export forever.
+        #expect(snapshot.details.keys.sorted() == ["1"])
+    }
+
+    @Test("A detail request that fails leaves the previous value in place")
+    func detailSweepKeepsLastGood() async throws {
+        let server = FakeServer(devices: [.stub("1", .online)])
+        let clock = MutableDate(.init(timeIntervalSince1970: 0))
+        let monitor = makeMonitor(server, clock: clock)
+        await monitor.poll()
+        #expect(await monitor.current.details["1"]?.lanIp == "10.42.0.1")
+
+        // Fail every request in the next sweep, detail included.
+        server.fail(times: 20, with: HTTPResponse(status: 500, body: Data(#"{"message":"boom"}"#.utf8)))
+        clock.value.addTimeInterval(1800)
+        await monitor.refreshNow()
+
+        // Blanking the IP column on a transient error would be worse than
+        // showing one that is half an hour old.
+        #expect(await monitor.current.details["1"]?.lanIp == "10.42.0.1")
+    }
 }
 
 @Suite("Broadcast")

@@ -29,12 +29,19 @@ extension YMCSError {
 
 /// Typed access to the YMCS Open API v2.
 ///
-/// Scope is deliberately read-only: this app monitors phones, it does not
-/// reboot, reconfigure or factory-reset them. Adding a write path would mean
-/// adding a confirmation story, so those endpoints are left out entirely.
+/// Reboot is the only write this client can perform. Factory reset
+/// (`POST /v2/dm/device/reset`, and `parts/reset` for accessories) is
+/// deliberately absent: it differs from reboot by one path segment and takes an
+/// identical body, so the protection against firing it by accident is that no
+/// code here can express it. Do not add a general `deviceControl(action:)`
+/// helper -- the separation is the point.
+///
+/// Configuration and firmware push are likewise not implemented.
 public final class YMCSClient: Sendable {
     /// The API caps `listDevices` at 100 records per page.
     public static let maxPageSize = 100
+    /// `listAlarms` allows 500, and alarms are small.
+    public static let maxAlarmPageSize = 500
 
     private let transport: any HTTPTransport
     private let credentialsProvider: any CredentialsProviding
@@ -129,6 +136,239 @@ public final class YMCSClient: Sendable {
         return try await get("/v2/dm/devices/\(id)", query: query)
     }
 
+    // MARK: - Device control
+
+    /// `POST /v2/dm/device/reboot`. Restarts phones through YMCS.
+    ///
+    /// Three things this does not do, all of which the caller must handle:
+    ///
+    ///   - It does not reach offline phones. YMCS accepts the request and the
+    ///     device never sees it, and that still counts as a success here.
+    ///   - It does not fail loudly. A partial failure is a 200 with the detail
+    ///     in `errors[]`, so `RebootResult.didFullySucceed` is the check that
+    ///     matters, not the absence of a thrown error.
+    ///   - It does not wait. The phones drop shortly afterwards and take a
+    ///     minute or two to come back, which looks exactly like an outage to
+    ///     anything watching -- see `Monitor.reboot`.
+    ///
+    /// The documented cap is 200 ids per call; this chunks at 100 to match the
+    /// paging used everywhere else.
+    public func rebootDevices(
+        ids: [String],
+        deviceType: DeviceType = .phone
+    ) async throws -> RebootResult {
+        struct Body: Encodable {
+            let deviceIds: [String]
+            let deviceType: Int
+        }
+        // Duplicates would be counted twice by the server's own totals.
+        var seen = Set<String>()
+        let unique = ids.filter { seen.insert($0).inserted }
+        guard !unique.isEmpty else { return .empty }
+
+        var result = RebootResult.empty
+        for chunk in stride(from: 0, to: unique.count, by: Self.maxPageSize).map({
+            Array(unique[$0..<min($0 + Self.maxPageSize, unique.count)])
+        }) {
+            let chunkResult: RebootResult = try await post(
+                "/v2/dm/device/reboot",
+                body: Body(deviceIds: chunk, deviceType: deviceType.rawValue)
+            )
+            result = result.merging(chunkResult)
+        }
+        return result
+    }
+
+    /// `POST /v2/dm/devices/{deviceId}/parts/reboot`. Restarts accessories on
+    /// one device; passing no ids restarts all of them.
+    ///
+    /// Same batch semantics as `rebootDevices` -- a partial failure is a 200.
+    public func rebootAccessories(
+        deviceID: String,
+        partIDs: [String] = []
+    ) async throws -> RebootResult {
+        struct Body: Encodable {
+            let partIds: [String]?
+        }
+        return try await post(
+            "/v2/dm/devices/\(deviceID)/parts/reboot",
+            body: Body(partIds: partIDs.isEmpty ? nil : partIDs)
+        )
+    }
+
+    // MARK: - Diagnostics
+
+    /// Which network ports this device can capture on, e.g. `["wan", "wlan0"]`.
+    public func networkInterfaces(deviceID: String) async throws -> [String] {
+        let data = try await executeRaw(
+            method: "GET",
+            path: "/v2/dm/devices/\(deviceID)/networkInterfaces",
+            query: [],
+            body: nil
+        )
+        return try decode([String].self, from: data)
+    }
+
+    /// Asks the phone for a screenshot. Returns a ticket, not a picture.
+    public func startScreenshot(deviceID: String) async throws -> DiagnosticTicket {
+        try await put("/v2/dm/devices/\(deviceID)/captureScreen", body: EmptyBody())
+    }
+
+    public func startSyslogExport(deviceID: String) async throws -> DiagnosticTicket {
+        try await put("/v2/dm/devices/\(deviceID)/exportSyslog", body: EmptyBody())
+    }
+
+    public func startConfigExport(deviceID: String) async throws -> DiagnosticTicket {
+        try await put("/v2/dm/devices/\(deviceID)/exportConfig", body: EmptyBody())
+    }
+
+    /// Pings from the phone, not from this Mac. That is the whole point: it
+    /// answers "can the handset reach its gateway", which nothing on this
+    /// machine can tell you.
+    public func startPing(
+        deviceID: String,
+        host: String,
+        times: Int
+    ) async throws -> DiagnosticTicket {
+        try await put(
+            "/v2/dm/devices/\(deviceID)/ping",
+            body: HostProbe(host: host, times: Self.clampedProbeCount(times))
+        )
+    }
+
+    public func startTraceroute(
+        deviceID: String,
+        host: String,
+        times: Int = 1
+    ) async throws -> DiagnosticTicket {
+        try await put(
+            "/v2/dm/devices/\(deviceID)/traceroute",
+            body: HostProbe(host: host, times: Self.clampedProbeCount(times))
+        )
+    }
+
+    /// Duration is clamped to the documented 180-3600s range: the server rejects
+    /// anything outside it, and a rejection here costs a round trip to learn
+    /// something the caller could have been told immediately.
+    public func startPacketCapture(
+        deviceID: String,
+        networkInterface: String = "wan",
+        type: PacketCaptureType = .notRTP,
+        filter: String? = nil,
+        duration: Int = 180
+    ) async throws -> DiagnosticTicket {
+        struct Body: Encodable {
+            let networkInterface: String
+            let type: Int
+            let filter: String?
+            let duration: Int
+        }
+        return try await put(
+            "/v2/dm/devices/\(deviceID)/startPacketCapture",
+            body: Body(
+                networkInterface: networkInterface,
+                type: type.rawValue,
+                filter: type == .custom ? filter : nil,
+                duration: min(3600, max(180, duration))
+            )
+        )
+    }
+
+    /// Ends a capture early. The file is available through the same ticket.
+    public func stopPacketCapture(deviceID: String) async throws {
+        _ = try await executeRaw(
+            method: "PUT",
+            path: "/v2/dm/devices/\(deviceID)/stopPacketCapture",
+            query: [],
+            body: nil
+        )
+    }
+
+    public func diagnosticStatus(id: String) async throws -> DiagnosticStatus {
+        try await get("/v2/dm/diagnosis/\(id)/status")
+    }
+
+    /// Polls a diagnostic to completion.
+    ///
+    /// Every diagnostic in the API works this way, so the waiting is written
+    /// once here rather than six times in the UI. The timeout is generous
+    /// because a packet capture legitimately runs for minutes -- but it is not
+    /// unbounded, since a phone that goes offline mid-diagnostic never reports
+    /// anything and the caller would otherwise wait forever.
+    public func awaitDiagnostic(
+        id: String,
+        pollInterval: Duration = .seconds(3),
+        timeout: Duration = .seconds(300)
+    ) async throws -> DiagnosticStatus {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            let status = try await diagnosticStatus(id: id)
+            if status.status != .inProgress { return status }
+            if ContinuousClock.now >= deadline {
+                throw YMCSError.diagnosticTimedOut(id: id)
+            }
+            try await Task.sleep(for: pollInterval)
+        }
+    }
+
+    private static func clampedProbeCount(_ times: Int) -> Int {
+        min(30, max(1, times))
+    }
+
+    private struct HostProbe: Encodable {
+        let host: String
+        let times: Int
+    }
+
+    /// Several diagnostics are `PUT` with no body at all; YMCS is happy with an
+    /// empty object and unhappy with a missing Content-Type.
+    private struct EmptyBody: Encodable {}
+
+    // MARK: - Accessories
+
+    /// `POST /v2/dm/device/listParts`. Accessories for many devices at once.
+    ///
+    /// The response is a bare array rather than the usual page envelope, and
+    /// `connStatus` arrives as a quoted string here but as a number from the
+    /// per-device endpoint. Both are handled in `Accessory`.
+    public func accessories(forDeviceIDs ids: [String]) async throws -> [Accessory] {
+        struct Body: Encodable {
+            let deviceIds: [String]
+        }
+        guard !ids.isEmpty else { return [] }
+
+        var collected: [Accessory] = []
+        // Documented cap is 200; chunked at 100 like everything else here.
+        for start in stride(from: 0, to: ids.count, by: Self.maxPageSize) {
+            let chunk = Array(ids[start..<min(start + Self.maxPageSize, ids.count)])
+            let data = try await executeRaw(
+                method: "POST",
+                path: "/v2/dm/device/listParts",
+                query: [],
+                body: try JSONEncoder().encode(Body(deviceIds: chunk))
+            )
+            collected.append(contentsOf: try decode([Accessory].self, from: data))
+        }
+        return collected
+    }
+
+    /// `POST /v2/dm/devices/{deviceId}/listParts`. One device, paged.
+    public func accessories(
+        deviceID: String,
+        skip: Int = 0,
+        limit: Int = 100
+    ) async throws -> Page<Accessory> {
+        struct Body: Encodable {
+            let skip: Int
+            let limit: Int
+            let autoCount: Bool
+        }
+        return try await post(
+            "/v2/dm/devices/\(deviceID)/listParts",
+            body: Body(skip: skip, limit: limit, autoCount: true)
+        )
+    }
+
     // MARK: - Alarms
 
     /// `POST /v2/dm/listAlarms`. YMCS raises an "Offline" alarm with its own
@@ -158,6 +398,145 @@ public final class YMCSClient: Sendable {
             "/v2/dm/listAlarms",
             body: Body(skip: skip, limit: limit, autoCount: autoCount, filter: filter)
         )
+    }
+
+    /// Every alarm YMCS is currently holding, paged at the documented maximum.
+    ///
+    /// `listAlarms` has no status filter, so solved and ignored alarms come back
+    /// alongside active ones and are filtered by the caller. The cap exists
+    /// because an enterprise that has never triaged an alarm can accumulate
+    /// thousands, and this runs on a poll loop.
+    public func allAlarms(
+        deviceType: DeviceType? = nil,
+        maximum: Int = 2_000
+    ) async throws -> (alarms: [Alarm], total: Int64?) {
+        var collected: [Alarm] = []
+        var total: Int64?
+        var skip = 0
+
+        while collected.count < maximum {
+            let page = try await listAlarms(
+                skip: skip,
+                limit: Self.maxAlarmPageSize,
+                autoCount: skip == 0,
+                deviceType: deviceType
+            )
+            if skip == 0 { total = page.total }
+            let items = page.items
+            collected.append(contentsOf: items)
+            if items.count < Self.maxAlarmPageSize { break }
+            skip += items.count
+            if let total, Int64(collected.count) >= total { break }
+        }
+        return (collected, total)
+    }
+
+    // MARK: - Call quality
+
+    /// `POST /v2/dm/listQoes`. Call records, newest first as YMCS returns them.
+    public func listCalls(
+        skip: Int = 0,
+        limit: Int = 100,
+        autoCount: Bool = true,
+        mac: String? = nil,
+        siteIDs: [String] = [],
+        since: Date? = nil,
+        until: Date? = nil
+    ) async throws -> Page<CallRecord> {
+        struct Filter: Encodable {
+            let mac: String?
+            let siteIds: [String]?
+            let startTime: Int64?
+            let endTime: Int64?
+
+            var isEmpty: Bool {
+                mac == nil && siteIds == nil && startTime == nil && endTime == nil
+            }
+        }
+        struct Body: Encodable {
+            let skip: Int
+            let limit: Int
+            let autoCount: Bool
+            let filter: Filter?
+        }
+        let filter = Filter(
+            mac: mac,
+            siteIds: siteIDs.isEmpty ? nil : siteIDs,
+            startTime: since.map(Self.milliseconds),
+            endTime: until.map(Self.milliseconds)
+        )
+        return try await post(
+            "/v2/dm/listQoes",
+            body: Body(
+                skip: skip,
+                limit: min(limit, Self.maxAlarmPageSize),
+                autoCount: autoCount,
+                filter: filter.isEmpty ? nil : filter
+            )
+        )
+    }
+
+    /// `POST /v2/dm/statistics/qoe`. A start and end time only count if both are
+    /// given, so they are sent as a pair or not at all.
+    public func callQualityStatistics(
+        siteIDs: [String] = [],
+        since: Date? = nil,
+        until: Date? = nil
+    ) async throws -> QualityStatistics {
+        struct Body: Encodable {
+            let siteIds: [String]?
+            let startTime: Int64?
+            let endTime: Int64?
+        }
+        let bounded = since != nil && until != nil
+        return try await post(
+            "/v2/dm/statistics/qoe",
+            body: Body(
+                siteIds: siteIDs.isEmpty ? nil : siteIDs,
+                startTime: bounded ? since.map(Self.milliseconds) : nil,
+                endTime: bounded ? until.map(Self.milliseconds) : nil
+            )
+        )
+    }
+
+    // MARK: - Operation log
+
+    /// `POST /v2/dm/listOpLogs`. Everything anyone did in YMCS, this app
+    /// included -- the independent record of our own restarts.
+    public func listOperationLogs(
+        skip: Int = 0,
+        limit: Int = 100,
+        autoCount: Bool = true,
+        since: Date? = nil,
+        until: Date? = nil
+    ) async throws -> Page<OperationLog> {
+        struct Filter: Encodable {
+            let startTime: Int64?
+            let endTime: Int64?
+        }
+        struct Body: Encodable {
+            let skip: Int
+            let limit: Int
+            let autoCount: Bool
+            // Documented as required, unlike every other list endpoint here.
+            let filter: Filter
+        }
+        return try await post(
+            "/v2/dm/listOpLogs",
+            body: Body(
+                skip: skip,
+                limit: min(limit, Self.maxAlarmPageSize),
+                autoCount: autoCount,
+                filter: Filter(
+                    startTime: since.map(Self.milliseconds),
+                    endTime: until.map(Self.milliseconds)
+                )
+            )
+        )
+    }
+
+    static func milliseconds(_ date: Date) -> Int64 {
+        Int64(date.timeIntervalSince1970 * 1000)
     }
 
     // MARK: - Lookups
@@ -213,8 +592,23 @@ public final class YMCSClient: Sendable {
         return try decode(data)
     }
 
+    private func put<Response: Decodable & Sendable>(
+        _ path: String,
+        body: some Encodable
+    ) async throws -> Response {
+        try await send(method: "PUT", path: path, body: body)
+    }
+
     private func post<Response: Decodable & Sendable>(
         _ path: String,
+        body: some Encodable
+    ) async throws -> Response {
+        try await send(method: "POST", path: path, body: body)
+    }
+
+    private func send<Response: Decodable & Sendable>(
+        method: String,
+        path: String,
         body: some Encodable
     ) async throws -> Response {
         let encoded: Data
@@ -226,13 +620,17 @@ public final class YMCSClient: Sendable {
         } catch {
             throw YMCSError.decoding(error)
         }
-        let data = try await executeRaw(method: "POST", path: path, query: [], body: encoded)
+        let data = try await executeRaw(method: method, path: path, query: [], body: encoded)
         return try decode(data)
     }
 
     private func decode<T: Decodable>(_ data: Data) throws -> T {
+        try decode(T.self, from: data)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            return try JSONDecoder().decode(type, from: data)
         } catch {
             throw YMCSError.decoding(error)
         }

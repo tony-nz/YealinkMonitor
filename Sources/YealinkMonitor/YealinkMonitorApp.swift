@@ -9,9 +9,20 @@ struct YealinkMonitorApp: App {
         MenuBarExtra {
             MenuBarContentView()
                 .environment(model)
+                // Belt and braces. `start()` is idempotent, and the label's
+                // task below is the one that normally wins the race.
                 .task { await model.start() }
         } label: {
             MenuBarLabel(model: model)
+                // Monitoring has to begin at launch, not at first click.
+                //
+                // With `.menuBarExtraStyle(.window)` the popover's content is
+                // built lazily, the first time the menu is opened -- so a
+                // `.task` there means a Mac that boots and is left alone never
+                // polls at all, and the menu bar shows a cheerful nothing while
+                // the fleet is down. The label is rendered immediately to draw
+                // the status item, so its task fires at launch.
+                .task { await model.start() }
         }
         .menuBarExtraStyle(.window)
 
@@ -21,6 +32,13 @@ struct YealinkMonitorApp: App {
                 .frame(minWidth: 900, minHeight: 480)
         }
         .defaultSize(width: 1100, height: 640)
+
+        Window("Activity", id: ActivityWindowID) {
+            ActivityWindow()
+                .environment(model)
+                .frame(minWidth: 820, minHeight: 420)
+        }
+        .defaultSize(width: 1000, height: 600)
 
         Settings {
             SettingsView()

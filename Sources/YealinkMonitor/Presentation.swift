@@ -50,6 +50,67 @@ extension AccountStatus {
     }
 }
 
+extension Alarm.Level {
+    var label: String {
+        switch self {
+        case .minor: "Minor"
+        case .major: "Major"
+        case .critical: "Critical"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .minor: .yellow
+        case .major: .orange
+        case .critical: .red
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .minor: "exclamationmark.circle"
+        case .major: "exclamationmark.triangle"
+        case .critical: "exclamationmark.octagon.fill"
+        }
+    }
+}
+
+extension Alarm {
+    /// Ranks alarms worst-first. Unknown levels sort last rather than first, so
+    /// a level this app does not recognise cannot masquerade as critical.
+    var severityRank: Int { level?.rawValue ?? 0 }
+}
+
+extension CallRecord.Quality? {
+    /// Nil quality is grey, not green: an unscored call is not a good call.
+    var tint: Color {
+        switch self {
+        case .good: .green
+        case .poor: .orange
+        case .bad: .red
+        case .unknown, nil: .secondary
+        }
+    }
+}
+
+extension StatusChange {
+    /// What the history row says. A drop this app caused by restarting the phone
+    /// reads as a restart, not as an outage -- otherwise the history invents a
+    /// reliability problem that does not exist.
+    var historyLabel: String {
+        switch (cause, to) {
+        case (.reboot, .offline), (.reboot, .pending): "Restarting"
+        case (.reboot, .online): "Back after restart"
+        default: to.label
+        }
+    }
+
+    var historySymbolName: String {
+        cause == .reboot ? "restart.circle" : to.symbolName
+    }
+}
+
 enum Format {
     static func relative(_ date: Date?, now: Date = Date()) -> String {
         guard let date else { return "never" }
@@ -61,6 +122,25 @@ enum Format {
     static func time(_ date: Date?) -> String {
         guard let date else { return "—" }
         return date.formatted(date: .omitted, time: .shortened)
+    }
+
+    static func callDuration(_ seconds: Int64?) -> String {
+        guard let seconds, seconds > 0 else { return "—" }
+        if seconds < 60 { return "\(seconds)s" }
+        return "\(seconds / 60)m \(seconds % 60)s"
+    }
+
+    /// MOS runs 1-5. Two decimal places is false precision; one is enough to
+    /// tell 4.3 from 3.6.
+    static func mos(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        return value.formatted(.number.precision(.fractionLength(1)))
+    }
+
+    /// For files rather than for people: sorts correctly in a spreadsheet and
+    /// does not change shape with the reader's locale.
+    static func iso(_ date: Date) -> String {
+        date.formatted(.iso8601.year().month().day().dateTimeSeparator(.space).time(includingFractionalSeconds: false))
     }
 
     static func dateTime(_ date: Date?) -> String {

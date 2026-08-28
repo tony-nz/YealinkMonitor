@@ -33,13 +33,16 @@ public enum YMCSError: Error, Sendable {
     case transport(any Error)
     /// The response was 2xx but could not be decoded.
     case decoding(any Error)
+    /// A diagnostic never finished. Usually means the phone stopped responding
+    /// part-way through.
+    case diagnosticTimedOut(id: String)
 
     /// Whether retrying the identical request could plausibly succeed.
     public var isRetryable: Bool {
         switch self {
         case .rateLimited, .server, .transport: true
         case .notConfigured, .authenticationFailed, .forbidden,
-             .badRequest, .notFound, .decoding: false
+             .badRequest, .notFound, .decoding, .diagnosticTimedOut: false
         }
     }
 }
@@ -65,6 +68,8 @@ extension YMCSError: LocalizedError {
             "Network error: \(error.localizedDescription)"
         case .decoding:
             "The server sent a response this app could not read."
+        case .diagnosticTimedOut:
+            "The phone did not finish the diagnostic in time. It may have gone offline part-way through."
         }
     }
 }
