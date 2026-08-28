@@ -66,7 +66,14 @@ login keychain and writes the Client ID and region to the app's preferences.
 `--uninstall` reverses both.
 
 Because the app is only ad-hoc signed, Gatekeeper rejects it on a Mac it did not
-come from. Transfers that set the quarantine flag -- AirDrop, email, a download
+come from. `provision.sh --app <path>` clears the quarantine flag as part of
+provisioning, so running it is usually all that is needed.
+
+On macOS 15 the refusal reads **"YealinkMonitor is damaged and can't be
+opened"**, which sounds like a corrupt download and is not: it is what an
+ad-hoc signed, quarantined bundle looks like to Gatekeeper. There is no
+right-click bypass for that wording, and `spctl -a` reports the bundle as
+`rejected` even on the machine that built it. Transfers that set the quarantine flag -- AirDrop, email, a download
 -- will be blocked outright, with no right-click bypass on recent macOS. Either
 clear the flag on the target machine:
 

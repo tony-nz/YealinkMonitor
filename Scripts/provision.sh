@@ -12,6 +12,9 @@
 #
 # Usage:
 #   ./Scripts/provision.sh --id <ACCESS_KEY_ID> [--region au|eu|us] [--app /path/to/YealinkMonitor.app]
+#
+# Passing --app also clears the app's quarantine flag, which is what stops an
+# ad-hoc signed bundle opening on a Mac it was copied to.
 #   ./Scripts/provision.sh --uninstall
 #
 # The secret is prompted for, or read from YMCS_CLIENT_SECRET. It is never
@@ -104,6 +107,24 @@ echo "Stored the secret in the login keychain ($SERVICE)."
 defaults write "$DOMAIN" clientID -string "$CLIENT_ID"
 defaults write "$DOMAIN" region -string "$REGION"
 echo "Wrote Client ID and region ($REGION) to $DOMAIN."
+
+# --- quarantine ----------------------------------------------------------
+# The bundle is only ad-hoc signed, so a copy that arrived by any route which
+# sets the quarantine flag -- AirDrop, email, a download, a sync folder -- is
+# refused by Gatekeeper. On macOS 15 that shows as "the application is damaged
+# and can't be opened", with no right-click bypass, which reads like a broken
+# download rather than a signing policy.
+#
+# This script already runs on the target Mac and already knows where the app
+# is, so it clears the flag rather than leaving it as a step to find out about
+# the hard way.
+if [[ -n "$APP_PATH" && -d "$APP_PATH" ]]; then
+    if xattr -d -r com.apple.quarantine "$APP_PATH" 2>/dev/null; then
+        echo "Cleared the quarantine flag on $APP_PATH."
+    else
+        echo "No quarantine flag on $APP_PATH."
+    fi
+fi
 
 cat <<NOTE
 
