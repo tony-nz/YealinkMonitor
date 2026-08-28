@@ -68,6 +68,28 @@ case "$REGION" in
     *) echo "error: --region must be au, eu or us (got '$REGION')" >&2; exit 64 ;;
 esac
 
+# Checked here rather than further down, where it is needed: everything below
+# prompts for the secret first, and being told the path is wrong *after* typing
+# a credential means typing it again for no reason.
+if [[ -n "$APP_PATH" && ! -d "$APP_PATH" ]]; then
+    echo "error: no app bundle at $APP_PATH" >&2
+    # A near miss is the usual cause -- "builds/" for "build/", or a path
+    # relative to the wrong directory -- so name the bundles that do exist.
+    found=0
+    for candidate in \
+        "$(dirname "${BASH_SOURCE[0]}")/../build/YealinkMonitor.app" \
+        "/Applications/YealinkMonitor.app"
+    do
+        [[ -d "$candidate" ]] || continue
+        if [[ $found -eq 0 ]]; then
+            echo "       there is one at:" >&2
+            found=1
+        fi
+        echo "         $(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")" >&2
+    done
+    exit 66
+fi
+
 SECRET="${YMCS_CLIENT_SECRET:-}"
 if [[ -z "$SECRET" ]]; then
     printf 'AccessKey Secret (input hidden): ' >&2
@@ -85,10 +107,7 @@ if [[ $ALLOW_ANY -eq 1 ]]; then
     # No prompt ever, but any process running as this user can read the secret.
     TRUST_ARGS=(-A)
 elif [[ -n "$APP_PATH" ]]; then
-    if [[ ! -d "$APP_PATH" ]]; then
-        echo "error: no app bundle at $APP_PATH" >&2
-        exit 66
-    fi
+    # Already validated above, before the secret was asked for.
     TRUST_ARGS=(-T "$APP_PATH/Contents/MacOS/YealinkMonitor")
 fi
 
