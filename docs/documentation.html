@@ -770,6 +770,15 @@ Scripts/make-icon.swift   draws AppIcon.icns from paths at every size</code></pr
     --password &lt;app-specific password&gt;</code></pre>
       The password is an app-specific password from appleid.apple.com, not the
       Apple ID password.
+      <p style="margin-top:.7rem">
+        The Team ID is <strong>not</strong> the value in parentheses in an
+        “Apple Development” certificate's name — that is the certificate's own
+        id, and <code>notarytool</code> answers a 403 for it. It is the
+        organizational unit of the certificate subject:
+      </p>
+<pre><code>security find-certificate -c "Developer ID Application" -p \
+    | openssl x509 -noout -subject -nameopt multiline \
+    | grep organizationalUnitName</code></pre>
     </li>
     <li>For <code>--publish</code>, an authenticated GitHub CLI: <code>gh auth login</code>.</li>
   </ol>

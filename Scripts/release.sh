@@ -30,11 +30,20 @@
 #
 #        xcrun notarytool store-credentials YealinkMonitor \
 #            --apple-id you@example.com \
-#            --team-id 8VEKT37468 \
+#            --team-id <team id> \
 #            --password <app-specific-password>
 #
 #    The password is an app-specific password from appleid.apple.com, not the
 #    Apple ID password. Override the profile name with NOTARY_PROFILE.
+#
+#    The Team ID is NOT the value in parentheses in an "Apple Development"
+#    certificate's name -- that is the certificate's own id, and notarytool
+#    answers a 403 for it. It is the organizational unit of the certificate
+#    subject:
+#
+#        security find-certificate -c "Developer ID Application" -p \
+#            | openssl x509 -noout -subject -nameopt multiline \
+#            | grep organizationalUnitName
 #
 # 3. For --publish, an authenticated GitHub CLI: `gh auth login`.
 
