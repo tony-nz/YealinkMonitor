@@ -148,7 +148,13 @@ struct DeviceDetailView: View {
                 }
                 .font(.callout)
             }
-            if accounts.contains(where: { $0.status?.isHealthy == false }) {
+            // Only worth saying about a phone that is up. An offline phone
+            // reports its lines as unregistered too, and telling someone that
+            // a phone which is down is "reachable" is simply false -- the
+            // status above already says what is wrong with it.
+            if device.deviceStatus == .online,
+               accounts.contains(where: { $0.status?.isHealthy == false })
+            {
                 // The failure mode the device status alone hides.
                 Label(
                     "This phone is reachable but has a line that is not registered, so it cannot take calls on it.",
