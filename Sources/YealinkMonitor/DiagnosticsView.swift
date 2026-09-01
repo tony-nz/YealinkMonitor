@@ -113,8 +113,8 @@ final class DeviceDiagnostics {
         jobs.insert(job, at: 0)
 
         Task {
-            let client = model.makeClient()
             do {
+                let client = try model.makeClient()
                 let ticket: DiagnosticTicket
                 switch kind {
                 case .screenshot:

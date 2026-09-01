@@ -22,12 +22,22 @@ final class AppModel {
     var settings: AppSettings {
         didSet {
             guard settings != oldValue else { return }
-            settings.save()
+            // A demo run must not write over the preferences of whoever is
+            // running it -- opening Settings alone would be enough to do that.
+            if !isDemo { settings.save() }
             applySettingsChange(from: oldValue)
         }
     }
 
-    let history = HistoryStore()
+    /// Launched with `-demoFleet YES`: a synthetic fleet, no monitor, no
+    /// requests and no credentials. See `DemoFleet`.
+    let isDemo = DemoFleet.isEnabled
+
+    /// Whether the app has something to show. True in demo mode, where there
+    /// are no credentials and nothing to configure.
+    var isConfigured: Bool { isDemo || settings.isConfigured }
+
+    let history: HistoryStore
     let email = EmailAlerter()
     let scheduler = RebootScheduler()
     private let notifier = Notifier()
@@ -39,8 +49,12 @@ final class AppModel {
     private var lifecycleObservers: [any NSObjectProtocol] = []
     private var pathMonitor: NWPathMonitor?
 
-    init(settings: AppSettings = .load()) {
-        self.settings = settings
+    init(settings: AppSettings? = nil) {
+        let isDemo = DemoFleet.isEnabled
+        self.settings = settings ?? (isDemo ? DemoFleet.settings() : .load())
+        // A demo run keeps its invented history in a scratch file, so it neither
+        // reads the real fleet's history nor writes demo entries into it.
+        self.history = HistoryStore(url: isDemo ? DemoFleet.historyURL() : nil)
     }
 
     // MARK: - Lifecycle
@@ -56,6 +70,13 @@ final class AppModel {
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+        // A demo run stops here: no keychain, no notification prompt, no email
+        // and no scheduler, so it cannot act on anything real.
+        if isDemo {
+            snapshot = DemoFleet.snapshot()
+            for change in DemoFleet.history() { history.append(change) }
+            return
+        }
         adoptEmbeddedCredentialsIfNeeded()
         email.update(settings: settings)
         observeSystemEvents()
@@ -105,6 +126,7 @@ final class AppModel {
     /// Rebuilt rather than reconfigured whenever the credentials or region
     /// change: a cached token from the old region is worthless.
     private func rebuildMonitor() {
+        guard !isDemo else { return }
         snapshotTask?.cancel()
         changeTask?.cancel()
         let previous = monitor
@@ -249,6 +271,10 @@ final class AppModel {
     /// A wrong region and a wrong secret produce the same 401, so guessing is
     /// the only way to tell them apart without asking Yealink.
     func checkConnection(probingRegions: Bool) async {
+        guard !isDemo else {
+            connectionCheck = .failed("This is a demo fleet. It has no credentials and makes no requests.")
+            return
+        }
         guard settings.isConfigured, hasStoredSecret else {
             connectionCheck = .failed("Enter a Client ID and Secret first.")
             return
@@ -391,12 +417,22 @@ final class AppModel {
     }
 
     func detail(for device: Device) async throws -> DeviceDetail {
-        try await makeClient().device(id: device.id)
+        if isDemo {
+            guard let detail = snapshot.detail(for: device) else {
+                throw YMCSError.notFound(nil)
+            }
+            return detail
+        }
+        return try await makeClient().device(id: device.id)
     }
 
     /// This phone's calls over the last week. Fetched with the detail pane
     /// rather than polled: nothing alerts on it.
     func recentCalls(for device: Device, days: Int = 7) async throws -> [CallRecord] {
+        if isDemo {
+            let mac = Device.normalizeMAC(device.mac)
+            return DemoFleet.calls().filter { $0.normalizedMAC == mac }
+        }
         let now = Date()
         return try await makeClient().listCalls(
             limit: 50,
@@ -470,8 +506,14 @@ final class AppModel {
     /// A client for one-off calls the polling loop does not make. Cheap to
     /// build: the token cache lives in the keychain-backed provider's store, so
     /// this costs an authentication the first time and nothing afterwards.
-    func makeClient() -> YMCSClient {
-        YMCSClient(
+    ///
+    /// Throws in a demo run rather than handing back a client. A demo has no
+    /// credentials of its own, and the keychain on the Mac running it may well
+    /// hold real ones -- so without this, a diagnostic or an accessory restart
+    /// launched from the demo would authenticate as the real enterprise.
+    func makeClient() throws -> YMCSClient {
+        guard !isDemo else { throw YMCSError.notConfigured }
+        return YMCSClient(
             credentialsProvider: KeychainCredentialsProvider(
                 clientID: settings.clientID,
                 region: settings.region

@@ -55,7 +55,7 @@ struct MenuBarContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !model.settings.isConfigured {
+        if !model.isConfigured {
             message(
                 "No credentials yet",
                 detail: "Add your YMCS Client ID and Secret to start monitoring.",

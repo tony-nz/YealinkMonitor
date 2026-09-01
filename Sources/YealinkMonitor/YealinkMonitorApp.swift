@@ -62,7 +62,7 @@ private struct MenuBarLabel: View {
     private var count: Int { model.problems.count }
 
     private var symbol: String {
-        if !model.settings.isConfigured { return "phone.badge.plus" }
+        if !model.isConfigured { return "phone.badge.plus" }
         if let failure = model.snapshot.failure, failure.needsAttention { return "phone.badge.waveform" }
         if model.isStale || !model.isOnNetwork { return "phone.badge.clock" }
         return count > 0 ? "phone.down.fill" : "phone.fill"

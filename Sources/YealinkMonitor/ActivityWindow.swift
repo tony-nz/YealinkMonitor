@@ -80,6 +80,11 @@ final class ActivityStore {
     }
 
     func loadQuality(days: Int) async {
+        if model.isDemo {
+            calls = DemoFleet.calls()
+            statistics = DemoFleet.statistics()
+            return
+        }
         await load { client, since, now in
             async let records = client.listCalls(limit: 500, since: since, until: now)
             async let stats = client.callQualityStatistics(since: since, until: now)
@@ -90,6 +95,10 @@ final class ActivityStore {
     }
 
     func loadLogs(days: Int) async {
+        if model.isDemo {
+            logs = DemoFleet.logs()
+            return
+        }
         await load { client, since, now in
             let page = try await client.listOperationLogs(limit: 500, since: since, until: now)
             self.logs = page.items.sorted { ($0.createTime ?? 0) > ($1.createTime ?? 0) }
