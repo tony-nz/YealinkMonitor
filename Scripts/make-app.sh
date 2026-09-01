@@ -40,7 +40,7 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/YealinkMonitor.app"
 BUNDLE_ID="nz.co.myers.YealinkMonitor"
-VERSION="0.1.0"
+VERSION="${APP_VERSION:-0.1.0}"
 
 cd "$ROOT"
 
