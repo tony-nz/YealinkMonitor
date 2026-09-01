@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YealinkMonitor — know when a phone goes down</title>
+<meta name="description" content="A macOS menu bar app that watches Yealink phones through the YMCS Open API and tells you when one goes offline.">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="./"><img src="assets/icon.png" alt="">YealinkMonitor</a>
+    <nav>
+      <a href="./" aria-current="page">Overview</a>
+      <a href="documentation.html">Documentation</a>
+      <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>
+      <a href="https://github.com/tony-nz/YealinkMonitor">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<div class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-text">
+    <h1>Know when a phone goes down.</h1>
+    <p class="lede">
+      A macOS menu bar app that watches a fleet of Yealink handsets through the
+      YMCS Open API and tells you the moment one stops answering — before
+      somebody walks over to report it.
+    </p>
+    <div class="hero-actions">
+      <a class="button" href="https://github.com/tony-nz/YealinkMonitor/releases/latest">Download for macOS</a>
+      <a class="button secondary" href="documentation.html">Read the documentation</a>
+    </div>
+    <p class="hero-note">
+      macOS 14 or later · Universal (Apple Silicon and Intel) · Requires a YMCS
+      subscription with API access
+    </p>
+    </div>
+    <figure class="hero-shot">
+      <img src="screenshots/menu-bar.png" alt="The menu bar popover listing four phones needing attention: three offline, one that has never reported, and three phones with active alarms.">
+      <figcaption>
+        Four phones need attention. Three are offline; the fourth has never
+        reported in at all, which is a different problem and is labelled as one.
+      </figcaption>
+    </figure>
+  </div>
+</div>
+
+<div class="wrap">
+
+<section>
+  <figure>
+    <img src="screenshots/phone-detail.png" alt="The Phones window, showing a fleet of twenty-five handsets in a sortable table with a detail pane for the selected phone.">
+    <figcaption>
+      The phone called <em>Sales&nbsp;2</em> is online — and cannot take calls on
+      one of its two lines, has an active alarm against it, and every one of its
+      last three calls rated Bad. A green tick in a status column would have said
+      it was fine.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What it does</h2>
+  <div class="features">
+    <div class="feature">
+      <h3>Watches without being watched</h3>
+      <p>Polling starts when the app launches, not when you first open the menu. A Mac that boots and is left alone is still monitoring.</p>
+    </div>
+    <div class="feature">
+      <h3>Tells you once, not forty times</h3>
+      <p>Outages are debounced across polls and batched, so a switch failure that drops forty phones is one notification and one email.</p>
+    </div>
+    <div class="feature">
+      <h3>Knows the difference between quiet and broken</h3>
+      <p><em>Offline</em>, <em>never reported</em>, <em>stale</em> and <em>archived</em> are four separate states, because treating them as one hides real faults.</p>
+    </div>
+    <div class="feature">
+      <h3>Looks past the status column</h3>
+      <p>Unregistered SIP lines, dead expansion modules, firmware drift and poor call quality: faults a phone can have while reporting itself perfectly healthy.</p>
+    </div>
+    <div class="feature">
+      <h3>Runs diagnostics on the phone</h3>
+      <p>Ping, traceroute, system log, config file, screenshot and packet capture — executed by the handset, not by your Mac.</p>
+    </div>
+    <div class="feature">
+      <h3>Restarts, on demand or on a schedule</h3>
+      <p>One phone, a selection, or everything currently listed. A restart is not reported as an outage, and an archived spare is never in reach of a bulk action.</p>
+    </div>
+    <div class="feature">
+      <h3>Emails when nobody is at the Mac</h3>
+      <p>SMTP submission over STARTTLS or implicit TLS, batched and rate limited. Quiet hours do not apply to email by default — overnight is when you most want telling.</p>
+    </div>
+    <div class="feature">
+      <h3>Keeps a history</h3>
+      <p>Confirmed status changes are written to disk, so the phone that drops twice a week is visible as a pattern rather than as a series of surprises.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>At a glance</h2>
+  <p class="section-lede">
+    The menu bar item carries the count. Everything else is one click away.
+  </p>
+
+  <div class="shots" style="margin-top:2rem">
+    <figure>
+      <img src="screenshots/phones.png" alt="The Phones window with a status filter, a site filter and a sortable table of twenty-five handsets across four sites.">
+      <figcaption>
+        The whole fleet, filterable by status and by site. The counts exclude
+        archived phones — a spare in a cupboard is meant to be offline.
+      </figcaption>
+    </figure>
+    <figure>
+      <img src="screenshots/phone-offline.png" alt="The detail pane for an offline phone, with the diagnostics buttons greyed out and an explanation, and a history of recent status changes.">
+      <figcaption>
+        An offline phone. The diagnostic buttons are disabled and say why: the
+        commands run on the handset, and this one is not reachable.
+      </figcaption>
+    </figure>
+    <figure>
+      <img src="screenshots/activity-call-quality.png" alt="The Activity window showing recent calls with quality ratings, MOS scores, durations and sites.">
+      <figcaption>
+        Call quality, with the MOS score for the worse direction. The phone
+        rating Bad on every call is one nothing else here can find.
+      </figcaption>
+    </figure>
+    <figure>
+      <img src="screenshots/activity-operation-log.png" alt="The Activity window showing the YMCS operation log: restarts, config pushes and firmware pushes with operator and result.">
+      <figcaption>
+        The YMCS operation log answers “did someone push config to this phone
+        just before it started dropping?” — and is the independent record of the
+        restarts this app performed.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <h2>Getting started</h2>
+  <div class="prose">
+    <p>
+      Three steps. The first one is the one that matters: nothing else works
+      until API access is confirmed.
+    </p>
+
+    <h3>1. Check your API access</h3>
+    <p>
+      YMCS issues one Client ID and Secret per enterprise, under
+      <strong>System ▸ Integration ▸ API</strong>. Confirm they work, and find
+      out which regional host your enterprise lives in:
+    </p>
+<pre><code>export YMCS_CLIENT_ID='...'
+read -rs YMCS_CLIENT_SECRET &amp;&amp; export YMCS_CLIENT_SECRET
+./Scripts/smoke-test.sh</code></pre>
+
+    <h3>2. Install and configure</h3>
+    <p>
+      Download the latest release, drag <code>YealinkMonitor.app</code> to
+      Applications, and open <strong>Settings</strong> from the menu bar item.
+      Enter the Client ID and Secret, then press
+      <strong>Save &amp; Test Connection</strong>.
+    </p>
+
+    <h3>3. Roll it out</h3>
+    <p>
+      To set up a second Mac without retyping anything into the window, run
+      <code>provision.sh</code> on it. It stores the secret in the login keychain
+      and writes the Client ID and region to the app's preferences.
+    </p>
+<pre><code>./Scripts/provision.sh --id '&lt;AccessKey ID&gt;' --region au \
+    --app /Applications/YealinkMonitor.app</code></pre>
+
+    <div class="warning">
+      <p>
+        <strong>The YMCS AccessKey is not a read-only credential.</strong> It
+        authorises device restart, factory reset, firmware push and configuration
+        push across the entire enterprise, and YMCS issues one pair per
+        enterprise — so it cannot be scoped down or rotated for this app alone.
+        Treat it accordingly, and read
+        <a href="documentation.html#credentials">the note on embedding it in a
+        bundle</a> before you consider doing that.
+      </p>
+    </div>
+
+    <p style="margin-top:1.6rem">
+      The <a href="documentation.html">documentation</a> covers the rest: how the
+      polling loop spends its request budget, what the markers in the table mean,
+      the difference between muting and archiving, scheduled restarts,
+      diagnostics, email alerts and the limits worth knowing about.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Try it with no tenant at all</h2>
+  <div class="prose">
+    <p>
+      The app ships with a demo fleet: an invented organisation, four sites and
+      twenty-six phones arranged to contain one of everything — an outage, a
+      handset that never provisioned, a phone that is online with an unregistered
+      line, a dead expansion module, firmware drift and an archived spare.
+    </p>
+    <p>
+      It makes no requests and reads no credentials, so it runs on a Mac that has
+      never been set up. Every screenshot on this site was taken from it.
+    </p>
+<pre><code>/Applications/YealinkMonitor.app/Contents/MacOS/YealinkMonitor -demoFleet YES</code></pre>
+  </div>
+</section>
+
+<section>
+  <h2>What it deliberately will not do</h2>
+  <div class="prose">
+    <p>
+      Restart is the only write this app can perform. Factory reset is not
+      implemented and is not going to be:
+      <code>POST /v2/dm/device/reset</code> differs from the reboot endpoint by
+      one path segment and takes an identical body, so the protection against
+      firing it by accident is that no code here can express it.
+    </p>
+    <p>
+      Configuration push and firmware push are out for the same reason. Firmware
+      is read-only: the table marks a phone running an older build than the rest
+      of its model, and stops there.
+    </p>
+  </div>
+</section>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>YealinkMonitor</span>
+    <a href="https://github.com/tony-nz/YealinkMonitor">Source</a>
+    <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>
+    <a href="https://github.com/tony-nz/YealinkMonitor/issues">Issues</a>
+    <span style="margin-left:auto">Not affiliated with Yealink.</span>
+  </div>
+</footer>
+
+</body>
+</html>

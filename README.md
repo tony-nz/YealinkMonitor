@@ -3,6 +3,9 @@
 A macOS menu bar app that watches Yealink phones through the **YMCS Open API v2**
 and tells you when one goes offline.
 
+**[Documentation and screenshots](https://tony-nz.github.io/YealinkMonitor/)** ·
+**[Download](https://github.com/tony-nz/YealinkMonitor/releases/latest)**
+
 - Menu bar item showing how many phones need attention, with a popover listing them
 - Full window with a sortable, filterable table and a per-device detail pane
 - Notifications on confirmed outages and recoveries, with debouncing, quiet hours
@@ -51,7 +54,24 @@ This renders the icon, compiles with SwiftPM, assembles
 `build/YealinkMonitor.app` by hand and ad-hoc signs it. Then open **Settings** from the menu bar item, enter the Client
 ID and Secret, and press **Save & Test Connection**.
 
-### 3. Deploying to another Mac
+### 3. Look at it without a tenant
+
+```sh
+./build/YealinkMonitor.app/Contents/MacOS/YealinkMonitor -demoFleet YES
+```
+
+Replaces the live fleet with an invented one: four sites and twenty-six phones
+arranged to contain one of everything -- an outage, a handset that never
+provisioned, a phone that is online with an unregistered line, a dead expansion
+module, firmware drift and an archived spare.
+
+It never creates a monitor, so no request is made and no credential is read. It
+substitutes its own settings rather than loading yours, with saving suppressed,
+so opening Settings in a demo run cannot show or overwrite your real
+configuration, and its history goes to a scratch file. Every screenshot on the
+documentation site was taken from it.
+
+### 4. Deploying to another Mac
 
 Release builds are universal (x86_64 + arm64), so the bundle runs natively on
 both Intel and Apple Silicon. Build it, copy it over, then provision that
@@ -96,7 +116,7 @@ merely an app; `provision.sh` exists so you do not have to.
 
 Never commit the secret. This repository is public.
 
-### 4. Tests
+### 5. Tests
 
 ```sh
 swift test
@@ -167,10 +187,13 @@ Sources/SMTPKit/          minimal SMTP submission client — no UI, fully tested
   SMTPMessage.swift       RFC 5322 headers and quoted-printable body
   SMTPTransport.swift     CFStream socket, upgradable to TLS in place
 Sources/YealinkMonitor/   SwiftUI app
+  DemoFleet.swift         the synthetic fleet behind -demoFleet YES
 Scripts/smoke-test.sh     Phase 0 API check
 Scripts/provision.sh      seed a Mac's keychain and preferences
 Scripts/make-app.sh       build the .app bundle without Xcode
+Scripts/release.sh        sign, notarize, staple and publish a release
 Scripts/make-icon.swift   draws AppIcon.icns from paths at every size
+docs/                     the GitHub Pages site
 ```
 
 ## Muting and archiving
@@ -291,10 +314,40 @@ offline sends one email rather than forty, and capped per hour. Over the cap,
 alerts are held and sent together rather than dropped. Quiet hours do **not**
 apply to email by default: overnight is usually when you most want to be told.
 
+## Cutting a release
+
+`Scripts/release.sh` builds the universal bundle, signs it with a Developer ID
+certificate and the hardened runtime, submits it to Apple's notary service,
+staples the ticket into the bundle and packages the result. A notarized bundle
+opens on any Mac with none of the quarantine dance above.
+
+```sh
+./Scripts/release.sh 0.1.0            # build and notarize
+./Scripts/release.sh 0.1.0 --publish  # ... and create the GitHub release
+```
+
+It needs two things set up once on the machine that cuts releases:
+
+1. A **Developer ID Application** certificate, from developer.apple.com ▸
+   Certificates ▸ + ▸ Developer ID Application. An "Apple Development"
+   certificate is a different thing and cannot notarize. On an organisation
+   account only the Account Holder can create one.
+2. Notary credentials in the keychain:
+
+   ```sh
+   xcrun notarytool store-credentials YealinkMonitor \
+       --apple-id you@example.com --team-id <team id> \
+       --password <app-specific password>
+   ```
+
+The script refuses a dirty working tree, and refuses to package a bundle built
+with `--embed`: a public release carrying the YMCS AccessKey would hand
+enterprise-wide write authority to anyone who clicked Download.
+
 ## Not done yet
 
-- App Sandbox and notarization (needs a Developer ID; ad-hoc signing only for
-  now, which means Gatekeeper blocks quarantined copies on other Macs)
+- App Sandbox. Released builds are signed and notarized with the hardened
+  runtime, but not sandboxed.
 - Factory reset, configuration push and firmware push — deliberately left out.
   Firmware is read-only here: the table marks a phone running an older build
   than the rest of its model, and stops there.

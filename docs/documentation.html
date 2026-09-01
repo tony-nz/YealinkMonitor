@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation — YealinkMonitor</title>
+<meta name="description" content="How YealinkMonitor polls YMCS, what the markers mean, and how to install, deploy, restart, diagnose and alert.">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <a class="brand" href="./"><img src="assets/icon.png" alt="">YealinkMonitor</a>
+    <nav>
+      <a href="./">Overview</a>
+      <a href="documentation.html" aria-current="page">Documentation</a>
+      <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>
+      <a href="https://github.com/tony-nz/YealinkMonitor">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap docs-layout">
+
+<aside class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#requirements">Requirements</a></li>
+    <li><a href="#install">Installing</a></li>
+    <li><a href="#first-run">First run</a></li>
+    <li><a href="#deploying">Deploying to other Macs</a></li>
+    <li><a href="#credentials">Credentials and what they authorise</a></li>
+    <li><a href="#polling">How it polls</a></li>
+    <li><a href="#phones-window">The Phones window</a></li>
+    <li><a href="#markers">What the markers mean</a></li>
+    <li><a href="#mute-archive">Muting and archiving</a></li>
+    <li><a href="#alerts">Notifications</a></li>
+    <li><a href="#email">Email alerts</a></li>
+    <li><a href="#restarting">Restarting phones</a></li>
+    <li><a href="#schedules">Scheduled restarts</a></li>
+    <li><a href="#diagnostics">Diagnostics</a></li>
+    <li><a href="#activity">Activity</a></li>
+    <li><a href="#exporting">Exporting</a></li>
+    <li><a href="#history">History</a></li>
+    <li><a href="#demo">Demo fleet</a></li>
+    <li><a href="#limits">Known limits</a></li>
+    <li><a href="#building">Building from source</a></li>
+    <li><a href="#releasing">Cutting a release</a></li>
+  </ol>
+</aside>
+
+<div class="docs-body">
+
+<section id="requirements">
+  <h2>Requirements</h2>
+  <ul>
+    <li>macOS 14 or later. Release builds are universal, so the bundle runs natively on both Apple Silicon and Intel.</li>
+    <li>A YMCS subscription with API access, and a Client ID / Secret pair.</li>
+    <li>To build from source: a Swift 6.1 toolchain. The Command Line Tools are enough — <strong>Xcode is not required</strong>.</li>
+  </ul>
+</section>
+
+<section id="install">
+  <h2>Installing</h2>
+  <p>
+    Download the latest zip from
+    <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>,
+    unzip it, and drag <code>YealinkMonitor.app</code> into
+    <code>/Applications</code>.
+  </p>
+  <p>
+    Released builds are signed with a Developer ID certificate and notarized by
+    Apple, so they open without any Gatekeeper ceremony. A bundle you built
+    yourself is only ad-hoc signed and behaves differently —
+    see <a href="#building">Building from source</a>.
+  </p>
+  <p>
+    The app has no Dock icon and no app switcher entry. It lives entirely in the
+    menu bar.
+  </p>
+</section>
+
+<section id="first-run">
+  <h2>First run</h2>
+
+  <h3>Confirm API access first</h3>
+  <p>
+    Nothing else works until this passes, so it is worth doing before anything
+    else. In YMCS, the credentials are under
+    <strong>System ▸ Integration ▸ API</strong>.
+  </p>
+<pre><code>export YMCS_CLIENT_ID='...'
+read -rs YMCS_CLIENT_SECRET &amp;&amp; export YMCS_CLIENT_SECRET
+./Scripts/smoke-test.sh</code></pre>
+  <p>
+    The script tries each regional host in turn and reports which one your
+    enterprise is in. That matters, because a wrong region and a wrong secret
+    produce the same HTTP 401 — guessing is the only way to tell them apart
+    without asking Yealink. The app's <strong>Save &amp; Test Connection</strong>
+    does the same probe.
+  </p>
+
+  <div class="note">
+    <p>
+      YMCS issues <strong>one</strong> Client ID/Secret pair per enterprise.
+      Check whether another integration is already using them before generating a
+      new pair — generating one invalidates the old.
+    </p>
+  </div>
+
+  <h3>Enter the credentials</h3>
+  <p>
+    Open <strong>Settings</strong> from the menu bar item, put the Client ID and
+    Secret into the Account tab, and press
+    <strong>Save &amp; Test Connection</strong>. The secret goes into the login
+    keychain; everything else goes into the app's preferences.
+  </p>
+</section>
+
+<section id="deploying">
+  <h2>Deploying to other Macs</h2>
+  <p>
+    Copy the app across, then provision that machine once:
+  </p>
+<pre><code>./Scripts/provision.sh --id '&lt;AccessKey ID&gt;' --region au \
+    --app /Applications/YealinkMonitor.app</code></pre>
+  <p>
+    It prompts for the secret (or reads <code>YMCS_CLIENT_SECRET</code> from the
+    environment), stores it in the login keychain, and writes the Client ID and
+    region to the app's preferences. <code>--uninstall</code> reverses both.
+  </p>
+  <p>
+    If you are deploying a bundle you built rather than a released one,
+    <code>--app &lt;path&gt;</code> also clears the quarantine flag, which an
+    ad-hoc signed bundle needs. See <a href="#building">Building from source</a>.
+  </p>
+</section>
+
+<section id="credentials">
+  <h2>Credentials and what they authorise</h2>
+
+  <div class="danger">
+    <p>
+      <strong>The YMCS AccessKey is an enterprise-wide write credential.</strong>
+      It authorises device restart, factory reset, firmware push and
+      configuration push across every phone in the enterprise. YMCS issues one
+      pair per enterprise, so it cannot be scoped down, and it cannot be rotated
+      for this app alone without breaking every other integration that uses it.
+    </p>
+  </div>
+
+  <h3>Embedding it in the bundle</h3>
+  <p>
+    <code>make-app.sh --embed</code> bakes the credentials into
+    <code>Info.plist</code> so a copied app just works with no setup. That is a
+    real decision rather than a convenience.
+  </p>
+  <p>
+    <code>Info.plist</code> is plain text; a string in a bundle comes straight
+    back out with <code>strings</code>. An embedded build is therefore a
+    copyable, unrevokable grant of restart-and-factory-reset authority over the
+    whole fleet. It is a credential you are handing out, not merely an app — and
+    <code>provision.sh</code> exists so that you do not have to.
+  </p>
+  <p>
+    The release script refuses to package a bundle with embedded credentials, and
+    the repository's <code>.gitignore</code> excludes <code>*.app/</code>
+    anywhere in the tree for the same reason.
+  </p>
+</section>
+
+<section id="polling">
+  <h2>How it polls</h2>
+
+  <p>
+    Monitoring starts when the app launches, not when you first open the popover.
+    That is worth stating because it is easy to get wrong: with
+    <code>.menuBarExtraStyle(.window)</code>, SwiftUI builds the popover's content
+    lazily, so anything hung off it never runs on a Mac that boots and is left
+    alone. The polling loop is started from the menu bar <em>label</em> instead,
+    which is rendered immediately. Nothing on that path is allowed to block:
+    notification permission is requested afterwards, and the keychain is not
+    touched at all unless the bundle carries embedded credentials.
+  </p>
+
+  <h3>Why polling, and not events</h3>
+  <p>
+    YMCS does support pushed events — there is an Event Subscription panel in the
+    console, under <strong>System ▸ Integration ▸ API</strong> — but delivery
+    needs a publicly reachable URL for YMCS to POST to, which a Mac behind NAT
+    has not got. So this app polls.
+  </p>
+
+  <h3>The request budget</h3>
+  <p>
+    The enterprise-wide limit is 50 requests per second, shared with every other
+    integration using the same credentials, so the loop stays cheap.
+  </p>
+
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr><th>Every</th><th>What</th><th>Cost</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>heartbeat</code><br>(default 60s)</td>
+        <td><code>GET /v2/dm/statistics/deviceCount?deviceStatus=0</code></td>
+        <td>1 request</td>
+      </tr>
+      <tr>
+        <td>when that count moves</td>
+        <td><code>POST /v2/dm/listDevices</code>, paged at 100</td>
+        <td>~1 request per 100 phones</td>
+      </tr>
+      <tr>
+        <td><code>fullRefresh</code><br>(default 600s)</td>
+        <td>full listing regardless</td>
+        <td>same</td>
+      </tr>
+      <tr>
+        <td><code>detailRefresh</code><br>(default 1800s)</td>
+        <td><code>GET /v2/dm/devices/{id}</code> for each phone</td>
+        <td><strong>1 request per phone</strong></td>
+      </tr>
+      <tr>
+        <td>while a device is mid-debounce</td>
+        <td>full listing, so confirmations can accumulate</td>
+        <td>same</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    A 100-phone fleet at rest costs roughly one request per minute, plus a burst
+    of one-per-phone every half hour.
+  </p>
+
+  <p>
+    That last sweep is the expensive one, and it exists because
+    <code>listDevices</code> returns no LAN IP, no serial and no SIP line state —
+    only <code>GET /v2/dm/devices/{id}</code> does, one phone at a time. It runs
+    four at a time, paced by the rate limiter, and the device list is drawn before
+    it starts, so a slow sweep never delays the window. The <strong>LAN IP</strong>
+    column reads “—” until the sweep reaches that phone.
+  </p>
+
+  <h3>Debouncing</h3>
+  <p>
+    A phone must be seen offline for a configurable number of consecutive checks
+    (two by default) before you are told. Recovery is reported on the first check
+    that sees it, because there is no cost to being told early that something is
+    working again.
+  </p>
+</section>
+
+<section id="phones-window">
+  <h2>The Phones window</h2>
+
+  <figure>
+    <img src="screenshots/phones.png" alt="The Phones window with a status filter, a site filter and a sortable table of twenty-five phones.">
+    <figcaption>
+      Filter by status and by site; sort by any column. The counts in the status
+      filter exclude archived phones, as does everything else in the app.
+    </figcaption>
+  </figure>
+
+  <p>
+    Selecting a phone fills the detail pane on the right with what the detail
+    sweep has fetched: LAN IP, serial, SIP line state, active alarms,
+    accessories, recent calls, the diagnostic buttons, and this app's own record
+    of the phone's recent status changes.
+  </p>
+
+  <figure>
+    <img src="screenshots/diagnostics.png" alt="The detail pane for a healthy phone, showing two registered SIP lines, a recent call and six enabled diagnostic buttons.">
+    <figcaption>
+      A phone that is genuinely fine: both lines registered, a recent call rated
+      Good, and every diagnostic available because the handset is reachable.
+    </figcaption>
+  </figure>
+</section>
+
+<section id="markers">
+  <h2>What the markers mean</h2>
+
+  <div class="table-scroll">
+  <table>
+    <thead>
+      <tr><th>Marker</th><th>Means</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Green tick</td>
+        <td>Online, as far as YMCS knows. Check <em>Last reported</em> in the detail pane to see how stale that view is.</td>
+      </tr>
+      <tr>
+        <td>Red triangle</td>
+        <td>Offline: the phone has reported in before and is not now.</td>
+      </tr>
+      <tr>
+        <td>Amber question mark</td>
+        <td><strong>Never reported.</strong> Registered in YMCS and has never phoned home — typically never provisioned or never powered on. A different problem from offline, and kept separate throughout.</td>
+      </tr>
+      <tr>
+        <td>Red exclamation</td>
+        <td>YMCS has an active alarm against this phone, independent of this app's own view. A phone can be reachable and still have a critical alarm.</td>
+      </tr>
+      <tr>
+        <td>Amber triangle</td>
+        <td>Online, but something inside it is not right — most often a SIP line that is not registered, which means the handset cannot take calls on it.</td>
+      </tr>
+      <tr>
+        <td>Broken-figure icon</td>
+        <td>An accessory is attached and not working: a headset or expansion module that has stopped reporting. The phone itself looks perfectly healthy.</td>
+      </tr>
+      <tr>
+        <td>Bell with a slash</td>
+        <td>Muted. See <a href="#mute-archive">Muting and archiving</a>.</td>
+      </tr>
+      <tr>
+        <td>Down arrow beside the firmware</td>
+        <td>Running an older build than the rest of its model. Not an alert — a phone can be deliberately held back — but the first thing to check when one handset behaves differently.</td>
+      </tr>
+      <tr>
+        <td>“—” in LAN IP</td>
+        <td>The detail sweep has not reached that phone yet, or the phone has never reported one.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The fleet firmware reference is the <em>most common</em> version for that
+    model, not the highest: one phone on a beta build should not make the whole
+    fleet look out of date.
+  </p>
+</section>
+
+<section id="mute-archive">
+  <h2>Muting and archiving</h2>
+  <p>Two different things, deliberately kept apart.</p>
+
+  <h3>Mute</h3>
+  <p>
+    “Stop telling me about this phone.” It stays in the fleet, stays in the
+    counts and still shows its real status; only the notification is withheld.
+    Right for a phone with a known fault someone is already dealing with.
+  </p>
+
+  <h3>Archive</h3>
+  <p>
+    “This phone is not in service.” A spare in a cupboard is <em>meant</em> to be
+    offline, and a monitor showing a permanent red triangle for it trains you to
+    ignore red triangles.
+  </p>
+  <p>Archived phones are removed from:</p>
+  <ul>
+    <li>the menu bar count and the popover</li>
+    <li>the status filters and their counts</li>
+    <li>notifications and email</li>
+    <li>bulk actions — so <strong>Restart All Listed</strong> cannot reach the spare in the cupboard</li>
+  </ul>
+  <p>
+    They are not hidden, just moved: the status filter gains an
+    <strong>Archived</strong> entry, they are marked in the export's own column,
+    and Settings ▸ Alerts has a <strong>Restore All</strong>.
+  </p>
+  <p>
+    Archive from the right-click menu in the Phones window, or the button in the
+    detail pane.
+  </p>
+  <div class="note">
+    <p>
+      A schedule that already names a phone you later archive keeps naming it,
+      shown with an archive marker in the schedule editor. Silently dropping it
+      would change what a saved schedule does without saying so.
+    </p>
+  </div>
+</section>
+
+<section id="alerts">
+  <h2>Notifications</h2>
+
+  <figure>
+    <img src="screenshots/settings-alerts.png" alt="The Alerts tab of Settings: toggles for offline and recovery notifications, a confirmation count, and quiet hours.">
+    <figcaption>Settings ▸ Alerts.</figcaption>
+  </figure>
+
+  <p>
+    Notifications fire on confirmed outages and on recoveries. Quiet hours
+    suppress them between two times, and may wrap past midnight — the common
+    22:00–07:00 case is handled correctly. Setting the two times equal disables
+    quiet hours.
+  </p>
+  <p>
+    Quiet hours exist to stop the Mac interrupting the person sitting at it. They
+    do <strong>not</strong> apply to email by default, for the reason in the next
+    section.
+  </p>
+</section>
+
+<section id="email">
+  <h2>Email alerts</h2>
+
+  <figure>
+    <img src="screenshots/settings-email.png" alt="The Email tab of Settings: recipients, from address, SMTP server, security and port.">
+    <figcaption>Settings ▸ Email.</figcaption>
+  </figure>
+
+  <p>
+    Email needs an SMTP relay that will accept authenticated submission — a
+    provider mailbox or an internal relay. STARTTLS on port 587 and implicit TLS
+    on port 465 are both supported. The password lives in the login keychain next
+    to the YMCS secret, and is never sent over an unencrypted connection.
+  </p>
+  <p>
+    Alerts are batched (60 seconds by default), so a switch failure that takes
+    forty phones offline sends one email rather than forty, and capped per hour.
+    Over the cap, alerts are held and sent together rather than dropped.
+  </p>
+  <p>
+    Quiet hours do not apply to email by default: overnight is usually when you
+    most want to be told. There is a setting if you disagree.
+  </p>
+</section>
+
+<section id="restarting">
+  <h2>Restarting phones</h2>
+  <p>
+    Restart is the only write this app can perform. It is available for one phone
+    from the detail pane, for a selection from the right-click menu, and for
+    everything currently listed from the toolbar — where “listed” means after the
+    filters, which is why the menu item says <strong>Restart All Listed</strong>.
+  </p>
+
+  <p>Three things worth knowing:</p>
+  <ul>
+    <li>
+      <strong>An offline phone cannot be restarted.</strong> The command goes to
+      YMCS, which has no way to reach a phone that is not talking to it. YMCS
+      accepts the request regardless, so the app says so rather than reporting
+      success.
+    </li>
+    <li>
+      <strong>A restart looks exactly like an outage.</strong> For a settling
+      window afterwards (10 minutes by default) the resulting drop is recorded
+      but not alerted. A phone that has not come back when the window closes
+      <em>is</em> reported.
+    </li>
+    <li>
+      <strong>A partial failure is an HTTP 200.</strong> The endpoint answers
+      success and puts the detail in <code>errors[]</code>, so the app reports
+      counts rather than treating a non-error as a job done.
+    </li>
+  </ul>
+
+  <div class="note">
+    <p>
+      Factory reset is not implemented and is not going to be.
+      <code>POST /v2/dm/device/reset</code> differs from the reboot endpoint by
+      one path segment and takes an identical body, so the protection against
+      firing it by accident is that no code here can express it.
+    </p>
+  </div>
+</section>
+
+<section id="schedules">
+  <h2>Scheduled restarts</h2>
+
+  <figure>
+    <img src="screenshots/settings-schedules.png" alt="The Schedules tab of Settings, listing two schedules with their times, days, phone counts and last outcome.">
+    <figcaption>Settings ▸ Schedules.</figcaption>
+  </figure>
+
+  <p>
+    A schedule is a fixed list of phones, a time, and the days it runs — saved by
+    device id rather than by site or filter, because a filter-based schedule
+    silently grows as phones are added.
+  </p>
+
+  <div class="warning">
+    <p>
+      <strong>Schedules only fire while this app is running and the Mac is
+      awake.</strong> That is a property of a menu bar app, not something this
+      code can work around: it would need a LaunchAgent or a server-side
+      scheduler, and YMCS has no scheduling endpoint.
+    </p>
+  </div>
+
+  <p>
+    An occurrence missed by less than the grace window (one hour by default) runs
+    late and says so. One missed by longer is recorded as skipped rather than
+    firing at a surprising time — a restart hours after the time it was asked for
+    is an unexplained outage, not a helpful catch-up. Every run reports by
+    notification, and by email if configured.
+  </p>
+</section>
+
+<section id="diagnostics">
+  <h2>Diagnostics</h2>
+  <p>
+    Select a phone in the Phones window and use the buttons in its detail pane.
+    Everything there runs <strong>on the phone</strong>, which is the point:
+    <code>ping 10.0.0.1</code> from your Mac says nothing about whether the
+    handset in the back office can reach its gateway.
+  </p>
+
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Diagnostic</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Ping</td><td>Shown inline in the detail pane.</td></tr>
+      <tr><td>Traceroute</td><td>Shown inline in the detail pane.</td></tr>
+      <tr><td>System Log</td><td>Saved to Downloads and revealed in Finder.</td></tr>
+      <tr><td>Config File</td><td>Saved to Downloads and revealed in Finder.</td></tr>
+      <tr><td>Screenshot</td><td>What is on the handset's display, saved to Downloads.</td></tr>
+      <tr><td>Packet Capture</td><td>Runs for its full duration — three minutes minimum, per the API — before the file exists.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Each one is asynchronous: the request only asks the phone to do something,
+    and the result arrives later as a file.
+  </p>
+  <p>
+    The file type is worked out from the bytes rather than from the
+    documentation, which is wrong about it: <code>exportSyslog</code> is
+    described as producing a text file and actually returns a zip of
+    <code>datalog/*.log</code>. Archives are expanded on arrival, so
+    <strong>Show in Finder</strong> opens a folder of readable logs rather than a
+    file that looks corrupt.
+  </p>
+  <p>
+    An offline phone cannot run any of them, and the buttons are disabled with
+    that reason given rather than left to fail.
+  </p>
+</section>
+
+<section id="activity">
+  <h2>Activity</h2>
+  <p>
+    The <strong>Activity…</strong> window has two things YMCS knows that the
+    device list does not. Both are fetched when you open the window rather than
+    polled, because neither feeds an alert and polling them would spend the
+    enterprise's request budget on data nobody is looking at.
+  </p>
+
+  <h3>Call quality</h3>
+  <p>
+    How calls actually sounded, with the MOS score (1–5) for the worse direction.
+    A phone that is online around the clock and rates Bad on every call is a
+    fault nothing else here can show. A call is only as good as its worse leg,
+    and a zero means “not measured” rather than “terrible”, so unmeasured
+    directions are ignored rather than averaged in.
+  </p>
+
+  <div class="note">
+    <p>
+      Two things the API document gets wrong here, both confirmed against a live
+      tenant. <code>duration</code> is documented as milliseconds and is actually
+      seconds, so durations are derived from the start and end timestamps
+      instead. And <code>callerURI</code>/<code>calleeURI</code> are documented
+      but come back null, so the table shows the account and MOS rather than two
+      columns that can never fill.
+    </p>
+  </div>
+
+  <h3>Operation log</h3>
+  <p>
+    What anyone changed in YMCS, this app included. It answers “did someone push
+    config to this phone just before it started dropping?”, and it is the
+    independent record of the restarts this app performed.
+  </p>
+  <p>
+    YMCS returns i18n keys rather than text, e.g.
+    <code>i18n.yiot.backend.operation.device.management.restart</code>. The last
+    two segments are the only readable part, so that is what the Action column
+    shows.
+  </p>
+</section>
+
+<section id="exporting">
+  <h2>Exporting</h2>
+  <p>
+    The Phones window has an <strong>Export</strong> menu with the same two
+    scopes as Restart: everything currently listed (so the filters are in force —
+    the menu says “All Listed” for that reason) or just the selection.
+  </p>
+  <p>
+    The CSV carries what the window shows plus what the detail sweep has filled
+    in: IP, serial, SIP line counts, unregistered lines, accessory faults, active
+    alarms, firmware drift and whether the phone is archived.
+  </p>
+  <p>
+    It is written with a UTF-8 BOM, because Excel otherwise reads the file in the
+    system's legacy encoding and mangles anything non-ASCII.
+  </p>
+</section>
+
+<section id="history">
+  <h2>History</h2>
+  <p>
+    Confirmed status changes are appended to a capped on-disk log at
+    <code>~/Library/Application Support/YealinkMonitor/history.json</code>, and
+    the last of them for a given phone appear in its detail pane under
+    <strong>Recent changes</strong>.
+  </p>
+  <p>
+    This answers a question the API cannot: “how often does this phone actually
+    drop?” YMCS alarms only describe currently-active problems. Each entry records
+    whether the change was observed by polling or caused by a restart this app
+    performed, so a nightly scheduled reboot does not read as a nightly outage.
+  </p>
+</section>
+
+<section id="demo">
+  <h2>Demo fleet</h2>
+  <p>
+    Launching with <code>-demoFleet YES</code> replaces the live fleet with an
+    invented one: an organisation that does not exist, four sites and twenty-six
+    phones arranged to contain one of everything worth showing — an outage, a
+    handset that never provisioned, a phone that is online with an unregistered
+    line, a dead expansion module, firmware drift and an archived spare.
+  </p>
+<pre><code>/Applications/YealinkMonitor.app/Contents/MacOS/YealinkMonitor -demoFleet YES</code></pre>
+  <p>
+    It never creates a monitor, so no request is made and no credential is read —
+    a demo run works on a Mac that has never been provisioned. It substitutes its
+    own settings rather than loading yours, with saving suppressed, so opening
+    the Settings window in a demo run cannot show or overwrite your real
+    configuration. Its history goes to a scratch file rather than the real one.
+  </p>
+  <p>Every screenshot on this site was taken from it.</p>
+</section>
+
+<section id="limits">
+  <h2>Known limits</h2>
+  <ul>
+    <li>
+      <strong>Detection latency is bounded by YMCS, not by this app.</strong>
+      Phones report in on their own schedule; the detail pane shows
+      <em>Last reported</em> so you can see how stale YMCS's own view is.
+    </li>
+    <li>
+      <strong>A simultaneous swap hides from the heartbeat.</strong> If one phone
+      drops in the same interval as another recovers, the offline count is
+      unchanged. The periodic full refresh bounds how long that can go unnoticed.
+    </li>
+    <li>
+      <strong>Stale is not offline.</strong> If polling fails, the last known
+      device list stays on screen and is clearly marked stale rather than being
+      wiped or presented as current.
+    </li>
+    <li>
+      <strong>Schedules need the Mac awake.</strong> See
+      <a href="#schedules">Scheduled restarts</a>.
+    </li>
+    <li>
+      <strong>No App Sandbox.</strong> Released builds are signed and notarized
+      with the hardened runtime, but not sandboxed.
+    </li>
+  </ul>
+</section>
+
+<section id="building">
+  <h2>Building from source</h2>
+<pre><code>git clone https://github.com/tony-nz/YealinkMonitor.git
+cd YealinkMonitor
+./Scripts/make-app.sh release run</code></pre>
+  <p>
+    This renders the icon, compiles with SwiftPM, assembles
+    <code>build/YealinkMonitor.app</code> by hand and ad-hoc signs it. Xcode is
+    not required — the macOS SDK shipped with the Command Line Tools has
+    everything the app uses.
+  </p>
+  <p>
+    Release builds are universal. SwiftPM's own <code>--arch</code> flag needs
+    Xcode's <code>xcbuild</code>, which the Command Line Tools do not ship, so
+    each slice is built separately and <code>lipo</code>'d together. Debug builds
+    stay native-only, because the second slice roughly doubles the build time.
+  </p>
+
+  <h3>Tests</h3>
+<pre><code>swift test</code></pre>
+  <p>
+    The API client, polling engine, transition detector, rate limiter, alert
+    digest, schedule arithmetic and SMTP client are all covered and have no UI
+    dependency.
+  </p>
+
+  <h3>Gatekeeper and a bundle you built yourself</h3>
+  <div class="warning">
+    <p>
+      A locally built bundle is only <strong>ad-hoc signed</strong>, so
+      Gatekeeper rejects it on any Mac it did not come from. On macOS 15 the
+      refusal reads <strong>“YealinkMonitor is damaged and can't be opened”</strong>,
+      which sounds like a corrupt download and is not: it is what an ad-hoc
+      signed, quarantined bundle looks like to Gatekeeper. There is no
+      right-click bypass for that wording.
+    </p>
+  </div>
+  <p>Either clear the flag on the target machine:</p>
+<pre><code>xattr -dr com.apple.quarantine /Applications/YealinkMonitor.app</code></pre>
+  <p>
+    (<code>provision.sh --app &lt;path&gt;</code> does this as part of
+    provisioning, so running it is usually all that is needed.)
+  </p>
+  <p>
+    Or copy it by a route that never sets the flag — <code>scp</code>,
+    <code>rsync</code>, a Finder copy from a USB disk. Transfers that do set it
+    (AirDrop, email, a browser download) are blocked outright.
+  </p>
+  <p>
+    None of this applies to a build from
+    <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>,
+    which is notarized.
+  </p>
+
+  <h3>Layout</h3>
+<pre><code>Sources/YMCSKit/          API client, polling engine — no UI, fully tested
+  Client.swift            typed endpoints, retry and error mapping
+  TokenStore.swift        OAuth2 token cache with single-flight refresh
+  RateLimiter.swift       GCRA shaper + mandated 30s backoff on 429
+  Monitor.swift           heartbeat/full-refresh polling loop, snapshots
+  Transitions.swift       debounced online/offline change detection
+  AlertDigest.swift       batching and rate limiting for email alerts
+  RebootSchedule.swift    calendar-correct scheduled restart times
+  Models.swift            devices, alarms, accessories, calls, logs
+Sources/SMTPKit/          minimal SMTP submission client — no UI, fully tested
+  SMTPClient.swift        EHLO/STARTTLS/AUTH/DATA conversation
+  SMTPMessage.swift       RFC 5322 headers and quoted-printable body
+  SMTPTransport.swift     CFStream socket, upgradable to TLS in place
+Sources/YealinkMonitor/   SwiftUI app
+  DemoFleet.swift         the synthetic fleet behind -demoFleet YES
+Scripts/smoke-test.sh     Phase 0 API check
+Scripts/provision.sh      seed a Mac's keychain and preferences
+Scripts/make-app.sh       build the .app bundle without Xcode
+Scripts/release.sh        sign, notarize, staple and publish a release
+Scripts/make-icon.swift   draws AppIcon.icns from paths at every size</code></pre>
+</section>
+
+<section id="releasing">
+  <h2>Cutting a release</h2>
+  <p>
+    <code>Scripts/release.sh</code> builds the universal bundle, signs it with a
+    Developer ID certificate and the hardened runtime, submits it to Apple's
+    notary service, staples the ticket into the bundle and packages the result.
+  </p>
+<pre><code>./Scripts/release.sh 0.1.0            # build and notarize
+./Scripts/release.sh 0.1.0 --publish  # ... and create the GitHub release</code></pre>
+
+  <h3>One-time setup on the machine that cuts releases</h3>
+  <ol>
+    <li>
+      A <strong>Developer ID Application</strong> certificate, created at
+      developer.apple.com under Certificates ▸ + ▸ Developer ID Application. An
+      “Apple Development” certificate is a different thing and cannot notarize.
+      On an organisation account only the Account Holder can create one.
+    </li>
+    <li>
+      Notary credentials stored once in the keychain:
+<pre><code>xcrun notarytool store-credentials YealinkMonitor \
+    --apple-id you@example.com \
+    --team-id &lt;team id&gt; \
+    --password &lt;app-specific password&gt;</code></pre>
+      The password is an app-specific password from appleid.apple.com, not the
+      Apple ID password.
+    </li>
+    <li>For <code>--publish</code>, an authenticated GitHub CLI: <code>gh auth login</code>.</li>
+  </ol>
+
+  <p>
+    The script refuses to run against a dirty working tree, and refuses to
+    package a bundle built with <code>--embed</code>: a release carrying the YMCS
+    AccessKey would hand enterprise-wide write authority to anyone who clicked
+    Download.
+  </p>
+</section>
+
+</div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>YealinkMonitor</span>
+    <a href="https://github.com/tony-nz/YealinkMonitor">Source</a>
+    <a href="https://github.com/tony-nz/YealinkMonitor/releases">Releases</a>
+    <a href="https://github.com/tony-nz/YealinkMonitor/issues">Issues</a>
+    <span style="margin-left:auto">Not affiliated with Yealink.</span>
+  </div>
+</footer>
+
+<script>
+// Highlight the section currently in view in the sidebar.
+(function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+    var sections = links
+        .map(function (a) { return document.querySelector(a.getAttribute('href')); })
+        .filter(Boolean);
+    if (!sections.length || !('IntersectionObserver' in window)) return;
+
+    var visible = new Set();
+    var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+            if (entry.isIntersecting) visible.add(entry.target.id);
+            else visible.delete(entry.target.id);
+        });
+        // The topmost visible section wins, so scrolling up and down agree.
+        var current = sections.filter(function (s) { return visible.has(s.id); })[0];
+        links.forEach(function (a) {
+            a.classList.toggle('active', current && a.getAttribute('href') === '#' + current.id);
+        });
+    }, { rootMargin: '-72px 0px -70% 0px' });
+
+    sections.forEach(function (s) { observer.observe(s); });
+})();
+</script>
+
+</body>
+</html>
