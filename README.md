@@ -3,8 +3,12 @@
 A macOS menu bar app that watches Yealink phones through the **YMCS Open API v2**
 and tells you when one goes offline.
 
-**[Documentation and screenshots](https://tony-nz.github.io/YealinkMonitor/)** ·
+**[Documentation](https://tony-nz.github.io/YealinkMonitor/)** ·
 **[Download](https://github.com/tony-nz/YealinkMonitor/releases/latest)**
+
+<img src="docs/screenshots/phone-detail.png" alt="The Phones window: a sortable table of twenty-five handsets, with a detail pane showing the selected phone's SIP lines, active alarms and recent call quality.">
+
+<sub>The phone called **Sales 2** is online — and cannot take calls on one of its two lines, has an active alarm against it, and every one of its last three calls rated Bad. A green tick in a status column would have said it was fine.</sub>
 
 - Menu bar item showing how many phones need attention, with a popover listing them
 - Full window with a sortable, filterable table and a per-device detail pane
@@ -20,6 +24,12 @@ and tells you when one goes offline.
 - Restart phones: one, a selection, or everything currently listed — and on a
   schedule
 - On-disk history of status changes, so you can see which phones drop repeatedly
+
+<img src="docs/screenshots/menu-bar.png" width="340" alt="The menu bar popover listing four phones needing attention: three offline, one that has never reported, and a summary of three phones with active alarms.">
+
+<sub>Four phones need attention. Three are offline; the fourth has never reported in at all, which is a different problem and is labelled as one.</sub>
+
+> Every screenshot here comes from the built-in demo fleet ([below](#3-look-at-it-without-a-tenant)), not from a real one.
 
 ## Requirements
 
@@ -262,6 +272,8 @@ endpoint. An occurrence missed by less than the grace window runs late and says
 so; one missed by longer is recorded as skipped rather than firing at a
 surprising time. Every run reports by notification, and by email if configured.
 
+<img src="docs/screenshots/settings-schedules.png" width="520" alt="The Schedules tab of Settings, listing two schedules with their times, days, phone counts and last outcome.">
+
 ## Diagnostics
 
 Select a phone in the Phones window and use the buttons in its detail pane.
@@ -280,6 +292,10 @@ which is wrong about it: `exportSyslog` is described as producing a text file
 and actually returns a zip of `datalog/*.log`. Archives are expanded on arrival,
 so **Show in Finder** opens a folder of readable logs rather than a file that
 looks corrupt.
+
+<img src="docs/screenshots/diagnostics.png" alt="The detail pane for a healthy phone: two registered SIP lines, a recent call rated Good, and six enabled diagnostic buttons.">
+
+<sub>An offline phone cannot run any of them, and the buttons are disabled with that reason given rather than left to fail.</sub>
 
 ## Activity
 
@@ -301,6 +317,10 @@ The **Activity…** window has two things YMCS knows that the device list does n
 Both are fetched when you open the window rather than polled, because neither
 feeds an alert and polling them would spend the enterprise's request budget on
 data nobody is looking at.
+
+<img src="docs/screenshots/activity-call-quality.png" alt="The Activity window showing recent calls with quality ratings, MOS scores, durations and sites.">
+
+<sub>One phone rating Bad on every call, while its status stayed green the whole time. The operation log is on the [documentation site](https://tony-nz.github.io/YealinkMonitor/documentation.html#activity).</sub>
 
 ## Email alerts
 
